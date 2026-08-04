@@ -1,0 +1,14 @@
+#!/bin/bash
+
+### This script is called after the user uninstalls the application.
+### wizard_delete_data is collected by wizard/uninstall ("true" = delete user data).
+
+if [ "${wizard_delete_data}" = "true" ] && [ -n "${TRIM_PKGVAR}" ] && [ -d "${TRIM_PKGVAR}" ]; then
+    find "${TRIM_PKGVAR}" -mindepth 1 -delete 2>/dev/null
+fi
+
+if [ "${wizard_delete_data}" = "true" ] && [ -n "${TRIM_PKGETC}" ] && [ -d "${TRIM_PKGETC}" ]; then
+    rm -f "${TRIM_PKGETC}/service_port"
+fi
+
+exit 0

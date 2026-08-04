@@ -1,0 +1,8 @@
+.git
+.trae
+data/
+node_modules/
+build/
+*.tar.gz
+*.zip
+*.fpk

@@ -1,0 +1,27 @@
+[
+  {
+    "stepTitle": "卸载 提醒事项",
+    "items": [
+      {
+        "type": "tips",
+        "helpText": "应用即将卸载。用户数据（账号、数据库、上传文件、日志）默认保留在数据目录中，卸载后仍可手动找回；如需彻底清除，请选择删除。"
+      },
+      {
+        "type": "radio",
+        "field": "wizard_delete_data",
+        "label": "是否删除用户数据",
+        "initValue": "false",
+        "options": [
+          {
+            "label": "保留用户数据（推荐）",
+            "value": "false"
+          },
+          {
+            "label": "删除用户数据（账号、数据库、上传文件、日志）",
+            "value": "true"
+          }
+        ]
+      }
+    ]
+  }
+]

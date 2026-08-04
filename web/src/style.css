@@ -1,0 +1,100 @@
+@import './styles/themes.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  @apply text-foreground;
+  min-width: 320px;
+  background-color: rgb(var(--color-background));
+  background-image:
+    radial-gradient(at 0% 0%, rgb(var(--color-brand-500) / 0.08) 0px, transparent 50%),
+    radial-gradient(at 100% 0%, rgb(var(--color-accent) / 0.06) 0px, transparent 50%);
+  background-attachment: fixed;
+}
+
+button,
+a,
+input,
+select,
+textarea {
+  -webkit-tap-highlight-color: transparent;
+}
+
+.dark body {
+  background-image:
+    radial-gradient(at 0% 0%, rgb(var(--color-brand-500) / 0.14) 0px, transparent 50%),
+    radial-gradient(at 100% 0%, rgb(var(--color-accent) / 0.1) 0px, transparent 50%);
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  @apply bg-muted-foreground/30 rounded-full border-2 border-transparent bg-clip-content;
+}
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-muted-foreground/50;
+}
+
+@layer components {
+  /* Glassy surface used for cards and panels — consumes semantic tokens so
+     it follows the active theme/brand automatically. */
+  .surface {
+    @apply bg-surface/90 dark:bg-surface/70 backdrop-blur-xl border border-border shadow-card;
+  }
+
+  /* Primary brand button — `bg-brand-gradient` is already var-driven in
+     tailwind.config so swapping the brand CSS variables reskins this. */
+  .btn-brand {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-brand-gradient text-white text-sm font-semibold shadow-glow hover:brightness-110 active:scale-[0.98] disabled:opacity-60 disabled:pointer-events-none transition-all;
+  }
+
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium text-foreground bg-surface/70 dark:bg-surface/5 border border-border hover:bg-surface dark:hover:bg-surface/10 active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none transition-all;
+  }
+
+  .input-field {
+    @apply w-full px-4 py-2.5 rounded-xl border border-input bg-surface/80 dark:bg-surface/5 text-foreground placeholder-muted-foreground focus:ring-4 focus:ring-brand-500/15 focus:border-brand-500 outline-none transition-all;
+  }
+
+  .badge {
+    @apply inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-full;
+  }
+
+  /* Page-level container — uses the full available width so authenticated
+     views (especially tables) don't waste space once a sidebar is present. */
+  .page-container {
+    @apply w-full space-y-6;
+  }
+
+  /* Premium gradient button with a light sweep on hover */
+  .btn-premium {
+    @apply relative overflow-hidden w-full py-3 px-4 rounded-xl bg-brand-gradient text-white font-semibold shadow-glow active:scale-[0.98] disabled:opacity-60 disabled:pointer-events-none transition-all flex items-center justify-center gap-2;
+  }
+  .btn-premium::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -120%;
+    width: 80%;
+    height: 100%;
+    background: linear-gradient(120deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+    transform: skewX(-18deg);
+    transition: left 0.65s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .btn-premium:hover::after {
+    left: 130%;
+  }
+}

@@ -1,0 +1,128 @@
+#!/bin/bash
+
+LOG_FILE="${TRIM_PKGVAR}/logs/fnpack.log"
+PID_FILE="${TRIM_PKGVAR}/app.pid"
+
+mkdir -p "$(dirname "${LOG_FILE}")"
+
+APP_DIR="${TRIM_APPDEST}"
+WEB_DIR="${TRIM_APPDEST}/ui"
+DATA_DIR="${TRIM_PKGVAR}"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+
+# Load the persisted wizard setting. Fall back to the manifest port for
+# existing installations that predate the custom-port wizard.
+. "${SCRIPT_DIR}/port_config"
+PORT="$(runtime_port)"
+
+log_msg() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> ${LOG_FILE}
+}
+
+start_process() {
+    if status; then
+        return 0
+    fi
+
+    mkdir -p "${DATA_DIR}/db" "${DATA_DIR}/uploads" "${DATA_DIR}/logs"
+
+    # Optional runtime tuning collected by wizard/config. Values persist as
+    # environment variables; only forward them when set so defaults apply otherwise.
+    local extra_args=()
+    [ -n "${wizard_rate_limit}" ] && extra_args+=(-rate-limit "${wizard_rate_limit}")
+    [ -n "${wizard_cors_origin}" ] && extra_args+=(-cors-origin "${wizard_cors_origin}")
+    [ -n "${wizard_log_retention_days}" ] && extra_args+=(-log-retention-days "${wizard_log_retention_days}")
+
+    log_msg "Starting 提醒事项 on port ${PORT} ..."
+
+    cd "${APP_DIR}"
+    ./reminder \
+        -data-dir "${DATA_DIR}" \
+        -web-dir "${WEB_DIR}" \
+        -port "${PORT}" \
+        -logmode release "${extra_args[@]}" >> /dev/null 2>&1 &
+
+    printf "%s" "$!" > ${PID_FILE}
+    log_msg "提醒事项 started with pid $!"
+    return 0
+}
+
+stop_process() {
+    log_msg "Stopping 提醒事项 ..."
+
+    if [ -r "${PID_FILE}" ]; then
+        pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
+
+        log_msg "pid=${pid}"
+        if ! check_process "${pid}"; then
+            rm -f "${PID_FILE}"
+            log_msg "process not running, removed pid file"
+            return
+        fi
+
+        log_msg "send TERM signal to PID:${pid}..."
+        kill -TERM ${pid} >> ${LOG_FILE} 2>&1
+
+        local count=0
+        while check_process "${pid}" && [ $count -lt 10 ]; do
+            sleep 1
+            count=$((count + 1))
+            log_msg "waiting process terminate... (${count}s/10s)"
+        done
+
+        if check_process "${pid}"; then
+            log_msg "send KILL signal to PID:${pid}..."
+            kill -KILL "${pid}"
+            sleep 1
+            rm -f "${PID_FILE}"
+        else
+            log_msg "process stopped"
+        fi
+    fi
+
+    return 0
+}
+
+check_process() {
+    local pid=$1
+    if kill -0 "${pid}" 2>/dev/null; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+status() {
+    if [ -f "${PID_FILE}" ]; then
+        pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
+        if check_process "${pid}"; then
+            return 0
+        else
+            rm -f "${PID_FILE}"
+        fi
+    fi
+    return 1
+}
+
+case $1 in
+start)
+    start_process
+    ;;
+stop)
+    stop_process
+    ;;
+status)
+    if status; then
+        exit 0
+    else
+        exit 3
+    fi
+    ;;
+restart)
+    stop_process
+    start_process
+    ;;
+*)
+    exit 1
+    ;;
+esac

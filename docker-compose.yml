@@ -1,0 +1,17 @@
+services:
+  techfunway-reminders:
+    # Tracks the newest published image.
+    image: techfunways/reminders:latest
+    container_name: techfunway-reminders
+    ports:
+      - "8906:8906"
+    volumes:
+      # 数据库、上传文件、日志和配置均持久化在此卷中。
+      - techfunway-reminders-data:/app/data
+    environment:
+      - ENV=release
+      - DATA_DIR=/app/data
+    restart: unless-stopped
+
+volumes:
+  techfunway-reminders-data:

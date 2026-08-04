@@ -1,0 +1,17 @@
+services:
+  techfunway-reminders:
+    # Pins this deployment to the v0.1.4 release.
+    image: techfunways/reminders:v0.1.4
+    container_name: techfunway-reminders
+    ports:
+      - "8906:8906"
+    volumes:
+      # 数据库、上传文件、日志和配置均持久化在此卷中。
+      - techfunway-reminders-data:/app/data
+    environment:
+      - ENV=release
+      - DATA_DIR=/app/data
+    restart: unless-stopped
+
+volumes:
+  techfunway-reminders-data:

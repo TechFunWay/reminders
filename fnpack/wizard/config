@@ -1,0 +1,49 @@
+[
+  {
+    "stepTitle": "运行配置",
+    "items": [
+      {
+        "type": "text",
+        "field": "wizard_service_port",
+        "label": "服务端口（1024-65535，留空保持当前端口）",
+        "initValue": "",
+        "rules": [
+          {
+            "pattern": "^$|^[0-9]{4,5}$",
+            "message": "请输入 1024-65535 之间的端口号，或留空保持当前端口"
+          }
+        ]
+      },
+      {
+        "type": "text",
+        "field": "wizard_rate_limit",
+        "label": "公开接口限流（次/分钟，0=不限）",
+        "initValue": "20",
+        "rules": [
+          {
+            "pattern": "^[0-9]+$",
+            "message": "请输入非负整数"
+          }
+        ]
+      },
+      {
+        "type": "text",
+        "field": "wizard_cors_origin",
+        "label": "允许的 CORS 来源（* 表示全部）",
+        "initValue": "*"
+      },
+      {
+        "type": "text",
+        "field": "wizard_log_retention_days",
+        "label": "日志保留天数（0=永久）",
+        "initValue": "30",
+        "rules": [
+          {
+            "pattern": "^[0-9]+$",
+            "message": "请输入非负整数"
+          }
+        ]
+      }
+    ]
+  }
+]

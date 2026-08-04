@@ -1,0 +1,30 @@
+appname                    = techfunway-reminders
+version                    = 0.1.4
+display_name               = 提醒事项
+desc                       = """
+简洁可靠的多渠道提醒应用，支持清单管理、定时提醒、站内消息、电子邮件、短信、飞书机器人和 QQ 机器人通知。
+"""
+source                     = thirdparty
+platform                   = x86
+maintainer                 = 科技智趣坊
+maintainer_url             = https://github.com/TechFunWay/reminders
+distributor                = 科技智趣坊
+distributor_url            = https://techfunway.wycto.cn
+os_min_version             = 1.0.0
+ctl_stop                   = true
+desktop_uidir              = ui
+desktop_applaunchname      = techfunway-reminders.main
+service_port               = 8906
+checkport                  = false
+disable_authorization_path = false
+changelog                  = """
+端口配置与应用入口同步增强。
+
+功能特性：
+- 支持今天、计划、全部和已完成视图
+- 支持自定义清单与重复提醒
+- 支持电子邮件、短信、飞书机器人和 QQ 机器人
+- 支持飞牛 fnOS 安装、升级、应用设置与卸载向导
+- 支持在安装、升级和应用设置中修改服务端口
+- 飞牛桌面入口跟随向导端口动态打开
+"""
