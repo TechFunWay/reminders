@@ -1,0 +1,98 @@
+#!/bin/bash
+
+# fnOS only exposes wizard_* values to lifecycle callbacks reliably. Keep the
+# selected port in the package config directory so cmd/main and the desktop
+# entry use the same value after restart and upgrade.
+
+port_config_file() {
+    if [ -n "${TRIM_PKGETC}" ]; then
+        printf "%s/service_port" "${TRIM_PKGETC}"
+    elif [ -n "${TRIM_PKGVAR}" ]; then
+        printf "%s/service_port" "${TRIM_PKGVAR}"
+    else
+        printf "%s" "./service_port"
+    fi
+}
+
+is_valid_port() {
+    case "$1" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+
+    [ "$1" -ge 1024 ] 2>/dev/null && [ "$1" -le 65535 ] 2>/dev/null
+}
+
+stored_port() {
+    local file
+    local value
+
+    file="$(port_config_file)"
+    if [ -r "${file}" ]; then
+        value="$(head -n 1 "${file}" | tr -d '[:space:]')"
+        if is_valid_port "${value}"; then
+            printf "%s" "${value}"
+            return 0
+        fi
+    fi
+
+    if is_valid_port "${TRIM_SERVICE_PORT:-}"; then
+        printf "%s" "${TRIM_SERVICE_PORT}"
+    else
+        printf "%s" "8906"
+    fi
+}
+
+resolve_port() {
+    if is_valid_port "${1:-}"; then
+        printf "%s" "$1"
+    else
+        stored_port
+    fi
+}
+
+runtime_port() {
+    local file
+
+    file="$(port_config_file)"
+    if [ -r "${file}" ]; then
+        stored_port
+    else
+        resolve_port "${wizard_service_port:-}"
+    fi
+}
+
+save_port() {
+    local port
+    local file
+    local directory
+    local temporary
+
+    port="$(resolve_port "${1:-}")"
+    file="$(port_config_file)"
+    directory="$(dirname "${file}")"
+    mkdir -p "${directory}"
+
+    temporary="${file}.tmp"
+    printf "%s\n" "${port}" > "${temporary}"
+    mv -f "${temporary}" "${file}"
+    printf "%s" "${port}"
+}
+
+update_desktop_entry() {
+    local port="${1:-}"
+    local config_file="${TRIM_APPDEST}/ui/config"
+    local temporary="${config_file}.tmp"
+
+    if ! is_valid_port "${port}" || [ ! -f "${config_file}" ]; then
+        return 0
+    fi
+
+    sed "s/\"port\": \"[0-9]*\"/\"port\": \"${port}\"/" \
+        "${config_file}" > "${temporary}" && mv -f "${temporary}" "${config_file}"
+}
+
+configure_port() {
+    local port
+    port="$(save_port "${1:-}")"
+    update_desktop_entry "${port}"
+}

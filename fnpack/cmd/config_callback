@@ -1,0 +1,16 @@
+#!/bin/bash
+
+### This script is called after the user change environment variables in application setting page.
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+. "${SCRIPT_DIR}/port_config"
+
+configure_port "${wizard_service_port:-}"
+
+# Apply a changed port immediately. fnOS may not restart an app after every
+# configuration callback, so explicitly restart it with the persisted value.
+if [ -f "${SCRIPT_DIR}/main" ]; then
+    bash "${SCRIPT_DIR}/main" restart
+fi
+
+exit 0

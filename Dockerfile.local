@@ -1,0 +1,21 @@
+# Offline runtime image. The build context is prepared from an already-built
+# release archive by scripts/build-docker.sh, so no npm, Go module download,
+# APK installation, image pull, or registry access is required here.
+FROM alpine:3.21
+
+RUN adduser -D -u 1000 appuser
+WORKDIR /app
+
+COPY ca-certificates.crt /etc/ssl/cert.pem
+COPY reminder ./reminder
+COPY www ./static/dist
+
+RUN mkdir -p /app/data && chown -R appuser:appuser /app
+USER appuser
+
+EXPOSE 8906
+VOLUME ["/app/data"]
+HEALTHCHECK --interval=30s --timeout=3s --retries=3 \
+  CMD wget -qO- http://localhost:8906/api/version || exit 1
+ENTRYPOINT ["./reminder"]
+CMD ["-data-dir", "/app/data", "-web-dir", "./static/dist"]

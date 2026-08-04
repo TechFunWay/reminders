@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" sizes="512x512" href="/favicon-512.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Reminder</title>
+    <script>
+      // Apply the saved theme BEFORE any CSS or Vue mounts so the first paint
+      // already reflects the user's choice — otherwise a system-default
+      // light flash cuts in before Pinia's theme store runs apply().
+      (function () {
+        try {
+          var mode = localStorage.getItem('reminder-theme-mode') || 'system';
+          var brand = localStorage.getItem('reminder-theme-brand') || 'default';
+          var dark = mode === 'dark' ||
+            (mode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          var root = document.documentElement;
+          root.classList.toggle('dark', dark);
+          if (brand !== 'default') root.classList.add('brand-' + brand);
+        } catch (e) { /* private mode or storage off — fall back to defaults */ }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

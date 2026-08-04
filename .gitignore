@@ -1,0 +1,48 @@
+# Binaries and build output
+server/smallgo
+server/smallgo-*
+*.exe
+*.dll
+*.so
+*.dylib
+*.fpk
+
+# Data files (local dev data, DB, uploads, logs)
+server/data/
+data/
+dev/data/
+*.db
+*.db-journal
+
+# Frontend dependencies and build output
+web/node_modules/
+web/dist/
+
+# Compiled frontend served by the backend
+server/static/dist/
+
+# Build and release directories
+dev/
+build/
+release/
+dist/
+*.tar.gz
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log

@@ -1,0 +1,10 @@
+#!/bin/bash
+
+### This script is called after the user upgrades the application.
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+. "${SCRIPT_DIR}/port_config"
+
+configure_port "${wizard_service_port:-}"
+
+exit 0

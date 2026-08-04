@@ -1,0 +1,13 @@
+{
+    ".url": {
+        "techfunway-reminders.main": {
+            "title": "提醒事项",
+            "icon": "images/icon_{0}.png",
+            "type": "url",
+            "protocol": "http",
+            "port": "${wizard_service_port}",
+            "url": "/",
+            "allUsers": true
+        }
+    }
+}

@@ -1,0 +1,82 @@
+/* Theme tokens for the Reminder application.
+ *
+ * Each value is an "R G B" triplet (space-separated, no commas) so that
+ * Tailwind's `<alpha-value>` placeholder can compose it into
+ * `rgb(var(--x) / <alpha-value>)` at build time, which is the only way the
+ * opacity utilities (`/20`, `/70`, ...) work on tokenized colors.
+ *
+ * Themes live in two dimensions:
+ *
+ *   mode  — 'light' or 'dark'. The `.dark` class on <html> flips every
+ *           token to its dark variant.
+ *   brand — optional class on <html> like `.brand-acme` that overrides the
+ *           --color-brand-* range without touching the surrounding surface
+ *           tokens. Adding a new white-label palette means appending a CSS
+ *           rule for `.brand-<id>` here.
+ *
+ * The inline FOUC-prevention script in index.html sets both classes BEFORE
+ * Vue mounts so the first paint already reflects the user's choice.
+ */
+
+:root {
+  /* Reminder blue — calm, clear and legible on Chinese interfaces */
+  --color-brand-50:  239 246 255;
+  --color-brand-100: 219 234 254;
+  --color-brand-200: 191 219 254;
+  --color-brand-300: 147 197 253;
+  --color-brand-400: 96 165 250;
+  --color-brand-500: 49 130 246;
+  --color-brand-600: 37 99 235;
+  --color-brand-700: 29 78 216;
+  --color-brand-800: 30 64 175;
+  --color-brand-900: 30 58 138;
+
+  /* Surfaces and content */
+  --color-background:          247 248 250;
+  --color-foreground:          24 28 36;
+  --color-surface:             255 255 255;
+  --color-surface-foreground:  17 24 39;
+  --color-muted:               243 244 246;
+  --color-muted-foreground:   107 114 128;
+  --color-border:              229 231 235;
+  --color-input:               229 231 235;
+  --color-ring:                var(--color-brand-500);
+  --color-accent:              168 85 247;
+  --color-destructive:         220 38 38;
+}
+
+.dark {
+  --color-background:          11 15 26;
+  --color-foreground:           243 244 246;
+  --color-surface:              17 24 39;
+  --color-surface-foreground:  243 244 246;
+  --color-muted:                31 41 55;
+  --color-muted-foreground:    156 163 175;
+  --color-border:               55 65 81;   /* gray-700 — opaque white looked like a 3D bevel */
+  --color-input:                55 65 81;
+  --color-accent:              192 132 252;
+  --color-destructive:         248 113 113;
+}
+
+/* White-label brand overrides.
+ *
+ * Drop a brand by adding `.brand-<id>` here and shipping the resulting CSS.
+ * The Pinia theme store toggles `<html>`'s `brand-<id>` class so the entire
+ * app reskins without touching component markup.
+ *
+ * Example skeleton (commented out) — keep around as a template:
+
+.brand-acme {
+  --color-brand-50:  255 247 237;
+  --color-brand-100: 255 237 213;
+  --color-brand-200: 254 215 170;
+  --color-brand-300: 253 186 116;
+  --color-brand-400: 251 146 60;
+  --color-brand-500: 249 115 22;
+  --color-brand-600: 234 88 12;
+  --color-brand-700: 194 65 12;
+  --color-brand-800: 154 52 18;
+  --color-brand-900: 124 45 18;
+}
+
+ */

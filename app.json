@@ -1,0 +1,21 @@
+{
+  "appname": "reminder",
+  "display_name": "提醒事项",
+  "version": "0.1.4",
+  "desc": "简洁可靠的多渠道提醒应用",
+  "author": "TechFunWay",
+  "website": "https://techfunway.wycto.cn",
+  "port": 8906,
+  "docker": {
+    "image": "techfunways/reminders",
+    "container": "techfunway-reminders",
+    "tag_prefix": "techfunway-reminders"
+  },
+  "fnos": {
+    "os_min_version": "1.0.0",
+    "service_port": 8906,
+    "ctl_stop": true,
+    "checkport": true,
+    "disable_authorization_path": false
+  }
+}
