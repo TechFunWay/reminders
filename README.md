@@ -3,6 +3,16 @@
 面向中国大陆用户的轻量多渠道提醒应用。界面借鉴移动端提醒工具的低学习成本，支持清单、
 今天/计划/全部/已完成视图、重复提醒、稍后提醒，以及站内、邮件、短信、飞书和 QQ 通知。
 
+## 界面预览
+
+| PC 端：计划视图 | PC 端：通知方式 |
+| --- | --- |
+| ![PC 端计划视图](images/screenshots/reminders-pc-planned.jpg) | ![PC 端通知方式](images/screenshots/reminders-pc-channels.jpg) |
+
+| 手机端：计划视图 | 手机端：通知方式 |
+| --- | --- |
+| ![手机端计划视图](images/screenshots/reminders-mobile-planned.jpg) | ![手机端通知方式](images/screenshots/reminders-mobile-channels.jpg) |
+
 ## 技术栈
 
 - Go + Gin + GORM + SQLite（WAL）
