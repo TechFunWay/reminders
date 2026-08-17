@@ -24,7 +24,17 @@ var (
 	ErrPasswordTooLong  = errors.New("密码长度不能超过72字节")
 	ErrLastAdmin        = errors.New("不能降级、禁用或删除最后一个管理员")
 	ErrUserNotFound     = errors.New("用户不存在")
+	ErrFnOSNotBound     = errors.New("此飞牛 NAS 账号尚未绑定应用账号")
+	ErrFnOSAlreadyBound = errors.New("此飞牛 NAS 账号已绑定其他应用账号")
 )
+
+// FnOSIdentity is the trusted identity context added by the fnOS unified
+// gateway. Gateway tokens are deliberately neither persisted nor exposed.
+type FnOSIdentity struct {
+	UserID   uint
+	Username string
+	IsAdmin  bool
+}
 
 func validatePassword(password string) error {
 	if utf8.RuneCountInString(password) < 6 {
@@ -168,6 +178,140 @@ func Login(db *gorm.DB, username string, password string, passwordMd5 string, jw
 			"username": user.Username,
 			"role":     user.Role,
 		},
+	}, nil
+}
+
+// LoginWithFnOS signs in the application account bound to the gateway's
+// NAS-local UID. The identity must only come from the fnOS Unix-socket gateway.
+func LoginWithFnOS(db *gorm.DB, identity FnOSIdentity, jwtSecret string) (map[string]interface{}, error) {
+	var user database.User
+	if err := db.Where("fn_os_user_id = ?", identity.UserID).First(&user).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrFnOSNotBound
+		}
+		return nil, err
+	}
+	if user.Status != 1 {
+		return nil, fmt.Errorf("账号已停用")
+	}
+	if user.AuthVersion == 0 {
+		user.AuthVersion = 1
+		if err := db.Model(&user).Update("auth_version", user.AuthVersion).Error; err != nil {
+			return nil, err
+		}
+	}
+	if user.FnOSUsername != identity.Username {
+		if err := db.Model(&user).Update("fn_os_username", identity.Username).Error; err != nil {
+			return nil, err
+		}
+	}
+	return loginResult(user, jwtSecret)
+}
+
+// BindFnOSAccount either creates a new application account or verifies an
+// existing account, then atomically binds it to the current fnOS UID.
+func BindFnOSAccount(db *gorm.DB, identity FnOSIdentity, username, password, mode, jwtSecret string) (map[string]interface{}, error) {
+	if identity.UserID == 0 || identity.Username == "" {
+		return nil, fmt.Errorf("飞牛登录信息无效")
+	}
+
+	var result map[string]interface{}
+	err := db.Transaction(func(tx *gorm.DB) error {
+		var linked database.User
+		if err := tx.Where("fn_os_user_id = ?", identity.UserID).First(&linked).Error; err == nil {
+			return ErrFnOSAlreadyBound
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+
+		var user database.User
+		switch mode {
+		case "register":
+			var userCount int64
+			if err := tx.Model(&database.User{}).Count(&userCount).Error; err != nil {
+				return err
+			}
+			if userCount > 0 {
+				allowRegister, err := sysconfig.GetConfig(tx, "allow_register", 0)
+				if err != nil {
+					return err
+				}
+				if allowRegister != "true" {
+					return ErrRegisterDisabled
+				}
+			}
+			if err := validatePassword(password); err != nil {
+				return err
+			}
+			if err := tx.Where("username = ?", username).First(&user).Error; err == nil {
+				return ErrUserExists
+			} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return err
+			}
+			hashedPassword, err := auth.HashPassword(password)
+			if err != nil {
+				return err
+			}
+			role := "user"
+			if userCount == 0 {
+				role = "admin"
+			}
+			user = database.User{Username: username, Password: hashedPassword, Role: role, Status: 1, APIKey: auth.GenerateAPIKey(), AuthVersion: 1}
+			if err := tx.Create(&user).Error; err != nil {
+				return err
+			}
+		case "bind":
+			if err := tx.Where("username = ?", username).First(&user).Error; err != nil || user.Status != 1 {
+				return fmt.Errorf("用户名或密码错误")
+			}
+			verified, needsRehash := verifyStoredPassword(user.Password, password, "")
+			if !verified {
+				return fmt.Errorf("用户名或密码错误")
+			}
+			if needsRehash {
+				hashedPassword, err := auth.HashPassword(password)
+				if err != nil {
+					return err
+				}
+				if err := tx.Model(&user).Update("password", hashedPassword).Error; err != nil {
+					return err
+				}
+			}
+		default:
+			return fmt.Errorf("无效的绑定方式")
+		}
+
+		if user.FnOSUserID != nil && *user.FnOSUserID != identity.UserID {
+			return fmt.Errorf("该应用账号已绑定其他飞牛 NAS 账号")
+		}
+		updates := map[string]interface{}{
+			"fn_os_user_id":  identity.UserID,
+			"fn_os_username": identity.Username,
+		}
+		if user.AuthVersion == 0 {
+			user.AuthVersion = 1
+			updates["auth_version"] = user.AuthVersion
+		}
+		if err := tx.Model(&user).Updates(updates).Error; err != nil {
+			return err
+		}
+		user.FnOSUserID = &identity.UserID
+		user.FnOSUsername = identity.Username
+		var err error
+		result, err = loginResult(user, jwtSecret)
+		return err
+	})
+	return result, err
+}
+
+func loginResult(user database.User, jwtSecret string) (map[string]interface{}, error) {
+	token, err := auth.GenerateToken(user.ID, user.Username, user.Role, user.AuthVersion, jwtSecret)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{
+		"token": token,
+		"user":  map[string]interface{}{"id": user.ID, "username": user.Username, "role": user.Role},
 	}, nil
 }
 

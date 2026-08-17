@@ -19,6 +19,7 @@ import (
 	"smallgo/server/database"
 	_ "smallgo/server/qrcode"
 	"smallgo/server/sysconfig"
+	"smallgo/server/user"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -53,6 +54,28 @@ func setupTestRouter(t *testing.T) (*gin.Engine, *gorm.DB, string) {
 	return NewRouter(cfg, db, secret), db, dir
 }
 
+func setupFnOSTestRouter(t *testing.T) (*gin.Engine, *gorm.DB) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	dir := t.TempDir()
+	db, err := database.InitDB(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	if err := database.AutoMigrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if err := sysconfig.InitDefaultConfigs(db); err != nil {
+		t.Fatalf("init configs: %v", err)
+	}
+	secret, err := sysconfig.GetConfig(db, "jwt_secret", 0)
+	if err != nil || secret == "" {
+		t.Fatalf("jwt secret: %v", err)
+	}
+	cfg := config.Config{CORSOrigin: "*", RateLimit: 0, FnOSApp: true, GatewayPrefix: "/app/techfunway-reminders"}
+	return NewRouter(cfg, db, secret), db
+}
+
 func doJSON(r http.Handler, method, path, token string, body interface{}) *httptest.ResponseRecorder {
 	var buf io.Reader
 	if body != nil {
@@ -65,6 +88,27 @@ func doJSON(r http.Handler, method, path, token string, body interface{}) *httpt
 	}
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}
+
+func doFnOSJSON(r http.Handler, method, path, uid, username string, body interface{}) *httptest.ResponseRecorder {
+	var buf io.Reader
+	if body != nil {
+		b, _ := json.Marshal(body)
+		buf = bytes.NewReader(b)
+	}
+	req := httptest.NewRequest(method, path, buf)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if uid != "" {
+		req.Header.Set("X-Trim-Userid", uid)
+		req.Header.Set("X-Trim-Username", username)
+		req.Header.Set("X-Trim-Isadmin", "true")
+		req = req.WithContext(user.MarkFnOSGateway(req.Context()))
 	}
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -144,6 +188,161 @@ func TestFirstUserBecomesAdminAndLogin(t *testing.T) {
 	w = doJSON(r, "POST", "/api/auth/login", "", map[string]string{"username": "admin", "password": "nope"})
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("bad login status = %d, want 401", w.Code)
+	}
+}
+
+func TestFnOSOneClickLoginAndBinding(t *testing.T) {
+	r, db := setupFnOSTestRouter(t)
+	const base = "/app/techfunway-reminders/api/auth/fnos"
+
+	w := doFnOSJSON(r, http.MethodGet, base+"/identity", "1000", "nas-admin", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("fnos identity status %d body %s", w.Code, w.Body.String())
+	}
+	identity := decode(t, w)["data"].(map[string]interface{})
+	if identity["fnos_username"] != "nas-admin" {
+		t.Fatalf("unexpected fnos identity: %#v", identity)
+	}
+
+	w = doFnOSJSON(r, http.MethodPost, base+"/login", "1000", "nas-admin", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("unbound fnos login status %d body %s", w.Code, w.Body.String())
+	}
+	data := decode(t, w)["data"].(map[string]interface{})
+	if data["binding_required"] != true || data["fnos_username"] != "nas-admin" || data["has_accounts"] != false || data["suggested_mode"] != "register" || data["suggested_username"] != "" {
+		t.Fatalf("unexpected unbound fnos result: %#v", data)
+	}
+
+	w = doFnOSJSON(r, http.MethodPost, base+"/bind", "1000", "nas-admin", map[string]string{
+		"mode": "register", "username": "reminder-admin", "password": "secret123",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("fnos register/bind status %d body %s", w.Code, w.Body.String())
+	}
+	bound := decode(t, w)["data"].(map[string]interface{})
+	if bound["token"] == "" || bound["user"].(map[string]interface{})["role"] != "admin" {
+		t.Fatalf("unexpected bound result: %#v", bound)
+	}
+	var account database.User
+	if err := db.Where("username = ?", "reminder-admin").First(&account).Error; err != nil {
+		t.Fatal(err)
+	}
+	if account.FnOSUserID == nil || *account.FnOSUserID != 1000 || account.FnOSUsername != "nas-admin" {
+		t.Fatalf("fnos binding not persisted: %#v", account)
+	}
+
+	w = doFnOSJSON(r, http.MethodPost, base+"/login", "1000", "renamed-nas-admin", nil)
+	if w.Code != http.StatusOK || decode(t, w)["data"].(map[string]interface{})["token"] == "" {
+		t.Fatalf("bound fnos login failed: status %d body %s", w.Code, w.Body.String())
+	}
+	if err := db.First(&account, account.ID).Error; err != nil || account.FnOSUsername != "renamed-nas-admin" {
+		t.Fatalf("fnos username refresh failed: user=%#v err=%v", account, err)
+	}
+
+	// If the NAS username already exists as an application account, guide the
+	// user to bind that account instead of accidentally creating a second data
+	// silo with empty reminders and channel bindings.
+	w = doJSON(r, http.MethodPost, "/app/techfunway-reminders/api/auth/register", "", map[string]string{"username": "same-name", "password": "secret123"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("create matching account: status %d body %s", w.Code, w.Body.String())
+	}
+	w = doFnOSJSON(r, http.MethodPost, base+"/login", "3000", "same-name", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("matching fnos login status %d body %s", w.Code, w.Body.String())
+	}
+	data = decode(t, w)["data"].(map[string]interface{})
+	if data["binding_required"] != true || data["has_accounts"] != true || data["suggested_mode"] != "bind" || data["suggested_username"] != "same-name" {
+		t.Fatalf("matching account should suggest bind: %#v", data)
+	}
+
+	// Once any application account exists, an unbound NAS user must be sent to
+	// existing-account login even when the NAS and application usernames differ.
+	w = doFnOSJSON(r, http.MethodPost, base+"/login", "4000", "different-nas-name", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("different-name fnos login status %d body %s", w.Code, w.Body.String())
+	}
+	data = decode(t, w)["data"].(map[string]interface{})
+	if data["binding_required"] != true || data["has_accounts"] != true || data["suggested_mode"] != "bind" || data["suggested_username"] != "" {
+		t.Fatalf("existing accounts should require login and bind: %#v", data)
+	}
+
+	w = doJSON(r, http.MethodPost, "/app/techfunway-reminders/api/auth/register", "", map[string]string{"username": "existing-user", "password": "secret123"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("create existing account: status %d body %s", w.Code, w.Body.String())
+	}
+	w = doFnOSJSON(r, http.MethodPost, base+"/bind", "2000", "nas-user", map[string]string{
+		"mode": "bind", "username": "existing-user", "password": "secret123",
+	})
+	if w.Code != http.StatusOK || decode(t, w)["data"].(map[string]interface{})["token"] == "" {
+		t.Fatalf("existing account fnos bind failed: status %d body %s", w.Code, w.Body.String())
+	}
+}
+
+func TestFnOSAuthIsUnavailableOutsideGatewayMode(t *testing.T) {
+	r, _, _ := setupTestRouter(t)
+	if got := doFnOSJSON(r, http.MethodGet, "/api/auth/fnos/identity", "1000", "nas-admin", nil).Code; got != http.StatusNotFound {
+		t.Fatalf("non-fnos deployment exposed fnos identity route: status %d", got)
+	}
+	if got := doFnOSJSON(r, http.MethodPost, "/api/auth/fnos/login", "1000", "nas-admin", nil).Code; got != http.StatusNotFound {
+		t.Fatalf("non-fnos deployment exposed fnos login route: status %d", got)
+	}
+}
+
+func TestFnOSBindingRequiresGatewayIdentity(t *testing.T) {
+	r, _ := setupFnOSTestRouter(t)
+	const loginPath = "/app/techfunway-reminders/api/auth/fnos/login"
+	if got := doFnOSJSON(r, http.MethodPost, "/app/techfunway-reminders/api/auth/fnos/bind", "", "", map[string]string{
+		"mode": "register", "username": "admin", "password": "secret123",
+	}).Code; got != http.StatusUnauthorized {
+		t.Fatalf("missing gateway identity status %d, want 401", got)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, loginPath, nil)
+	req.Header.Set("X-Trim-Userid", "1000")
+	req.Header.Set("X-Trim-Username", "nas-admin")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("untrusted fnos headers status %d, want 401", w.Code)
+	}
+}
+
+func TestFnOSListensOnPortAndGatewaySocket(t *testing.T) {
+	socketFile, err := os.CreateTemp("/tmp", "rem-fnos-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket := socketFile.Name()
+	if err := socketFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(socket); err != nil {
+		t.Fatal(err)
+	}
+	listeners, err := listen(config.Config{
+		Port: 0, FnOSApp: true, GatewaySocket: socket, GatewayPrefix: "/app/techfunway-reminders",
+	})
+	if err != nil {
+		t.Fatalf("listen fnos: %v", err)
+	}
+	defer os.Remove(socket)
+	defer func() {
+		for _, listener := range listeners {
+			listener.Listener.Close()
+		}
+	}()
+	if len(listeners) != 2 || listeners[0].Listener.Addr().Network() != "tcp" || !listeners[1].IsFnOSGateway || listeners[1].Listener.Addr().Network() != "unix" {
+		t.Fatalf("unexpected fnos listeners: %#v", listeners)
+	}
+}
+
+func TestFnOSDirectPortRedirectsToGatewayPrefix(t *testing.T) {
+	r, _ := setupFnOSTestRouter(t)
+	handler := newDirectHandler(r, config.Config{FnOSApp: true, GatewayPrefix: "/app/techfunway-reminders"})
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
+	if w.Code != http.StatusTemporaryRedirect || w.Header().Get("Location") != "/app/techfunway-reminders/" {
+		t.Fatalf("direct fnos entry = status %d location %q", w.Code, w.Header().Get("Location"))
 	}
 }
 

@@ -10,7 +10,7 @@
     <div class="vignette"></div>
 
     <!-- Content -->
-    <div class="relative z-10 min-h-screen flex flex-col items-center justify-center px-6 py-12">
+    <div class="auth-content relative z-10 flex flex-col items-center justify-center px-6 py-12">
       <div class="w-full max-w-md">
         <!-- Brand -->
         <div class="flex flex-col items-center text-center mb-7 animate-fade-in">
@@ -63,9 +63,16 @@ const siteInitial = computed(() => (authStore.siteTitle || 'S').charAt(0).toUppe
 .auth-root {
   position: relative;
   min-height: 100vh;
-  overflow: hidden;
+  min-height: 100dvh;
+  overflow-x: hidden;
+  overflow-y: auto;
   background: #05050b;
   color: #fff;
+}
+
+.auth-content {
+  min-height: 100vh;
+  min-height: 100dvh;
 }
 
 /* base radial wash */
@@ -215,8 +222,56 @@ const siteInitial = computed(() => (authStore.siteTitle || 'S').charAt(0).toUppe
     0 12px 36px -8px rgba(124, 92, 255, 0.7);
 }
 
+/* Embedded mobile WebViews repaint fixed blur layers while the keyboard
+   animates the visual viewport. Keep the desktop treatment, but use a stable
+   static composition on touch devices so focusing an input stays responsive. */
+@media (max-width: 767px), (hover: none) and (pointer: coarse) {
+  .auth-content {
+    min-height: 100dvh;
+    justify-content: flex-start;
+    padding-top: max(2rem, env(safe-area-inset-top));
+    padding-bottom: max(2rem, env(safe-area-inset-bottom));
+  }
+
+  .bg-base,
+  .vignette {
+    position: absolute;
+  }
+
+  .aurora,
+  .grid-overlay,
+  .grain,
+  .card-glow {
+    display: none;
+  }
+
+  .auth-card {
+    background: rgba(18, 18, 30, 0.96);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .auth-card::before {
+    display: none;
+  }
+
+  .animate-fade-in,
+  .animate-scale-in {
+    animation: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .aurora { animation: none; }
   .auth-card::before { animation: none; }
+  .animate-fade-in, .animate-scale-in { animation: none; }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .auth-card {
+    background: rgba(18, 18, 30, 0.96);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
 }
 </style>

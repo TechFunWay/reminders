@@ -2,7 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 
 const router = createRouter({
-  history: createWebHistory(),
+  history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
     {
       path: '/login',
@@ -57,8 +57,12 @@ router.beforeEach(async (to, from, next) => {
   const authStore = useAuthStore()
   await authStore.init()
 
+  const fnosEnabled = import.meta.env.VITE_FNOS_APP === 'true'
   if (authStore.setupRequired && to.name !== 'Register') {
-    next({ name: 'Register' })
+    next({
+      name: 'Register',
+      query: fnosEnabled ? { fnos: 'bind', fnos_mode: 'register' } : {},
+    })
     return
   }
 

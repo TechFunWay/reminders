@@ -28,7 +28,7 @@ export function connectReminderEvents(
     while (!stopped) {
       controller = new AbortController()
       try {
-        const response = await fetch('/api/reminder/events', {
+        const response = await fetch(new URL('api/reminder/events', document.baseURI), {
           headers: {
             Accept: 'text/event-stream',
             Authorization: `Bearer ${token}`,

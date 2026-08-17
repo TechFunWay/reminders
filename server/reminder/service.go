@@ -280,13 +280,47 @@ func listReminders(db *gorm.DB, userID uint, view, query string, listID uint) ([
 	if err := q.Order("CASE WHEN due_at IS NULL THEN 1 ELSE 0 END, due_at ASC, priority DESC, position ASC, id DESC").Find(&rows).Error; err != nil {
 		return nil, err
 	}
+	if len(rows) == 0 {
+		return []ReminderDTO{}, nil
+	}
+
+	reminderIDs := make([]uint, 0, len(rows))
+	listIDs := make([]uint, 0, len(rows))
+	seenLists := make(map[uint]struct{})
+	for _, row := range rows {
+		reminderIDs = append(reminderIDs, row.ID)
+		if _, ok := seenLists[row.ListID]; !ok {
+			seenLists[row.ListID] = struct{}{}
+			listIDs = append(listIDs, row.ListID)
+		}
+	}
+
+	var channelRows []ReminderChannel
+	if err := db.Where("user_id = ? AND reminder_id IN ? AND enabled = ?", userID, reminderIDs, true).
+		Order("reminder_id ASC, id ASC").Find(&channelRows).Error; err != nil {
+		return nil, err
+	}
+	channelsByReminder := make(map[uint][]string, len(rows))
+	for _, channel := range channelRows {
+		channelsByReminder[channel.ReminderID] = append(channelsByReminder[channel.ReminderID], channel.Channel)
+	}
+
+	var lists []List
+	if err := db.Where("user_id = ? AND id IN ?", userID, listIDs).Find(&lists).Error; err != nil {
+		return nil, err
+	}
+	listNames := make(map[uint]string, len(lists))
+	for _, list := range lists {
+		listNames[list.ID] = list.Name
+	}
+
 	result := make([]ReminderDTO, 0, len(rows))
 	for _, row := range rows {
-		dto, err := getReminder(db, userID, row.ID)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, dto)
+		result = append(result, ReminderDTO{
+			Reminder: row,
+			Channels: channelsByReminder[row.ID],
+			ListName: listNames[row.ListID],
+		})
 	}
 	return result, nil
 }

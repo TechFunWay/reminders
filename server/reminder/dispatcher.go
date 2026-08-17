@@ -177,6 +177,8 @@ func channelLabel(channel string) string {
 		return "飞书机器人"
 	case ChannelQQ:
 		return "QQ 机器人"
+	case ChannelDingTalk:
+		return "钉钉群机器人"
 	default:
 		return "站内消息"
 	}

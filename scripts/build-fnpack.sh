@@ -12,6 +12,23 @@ BUILD_TIME=$(date +%Y-%m-%dT%H:%M:%S)
 GIT_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 LDFLAGS="-X smallgo/server/version.Version=${VERSION} -X smallgo/server/version.BuildTime=${BUILD_TIME} -X smallgo/server/version.GitCommit=${GIT_COMMIT} -X smallgo/server/version.AppName=${APP_DISPLAY_NAME}"
 
+# The visible fnOS entry must use the authenticated unified gateway. Including
+# a service port here can make remote/mobile clients attempt HTTPS against the
+# app's plain HTTP port, while bypassing the gateway identity headers.
+python3 - <<'PY'
+import json
+
+with open("fnpack/app/ui/config", encoding="utf-8") as source:
+    config = json.load(source)
+entry = config[".url"]["techfunway-reminders.main"]
+if entry.get("type") != "url":
+    raise SystemExit("fnOS desktop entry must use type=url")
+if entry.get("gatewayPrefix") != "/app/techfunway-reminders" or entry.get("gatewaySocket") != "app.sock":
+    raise SystemExit("fnOS desktop entry must use the reminders unified gateway")
+if "port" in entry or "protocol" in entry:
+    raise SystemExit("fnOS unified-gateway entry must not declare port or protocol")
+PY
+
 # Verify Docker is available (required for CGO cross-compilation)
 if ! command -v docker &>/dev/null; then
   echo "Error: Docker is required for fnOS package builds (CGO cross-compilation)."
@@ -20,7 +37,8 @@ if ! command -v docker &>/dev/null; then
 fi
 
 echo "Building frontend..."
-cd web && npm ci && npm run build && cd "$ROOT_DIR"
+VITE_FNOS_APP=true VITE_BASE_PATH="/app/${FNOS_PKG_NAME}/" npm --prefix web ci
+VITE_FNOS_APP=true VITE_BASE_PATH="/app/${FNOS_PKG_NAME}/" npm --prefix web run build
 
 echo "Copying frontend..."
 rm -rf server/static/dist

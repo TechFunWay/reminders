@@ -242,7 +242,7 @@ function debouncedLoad() {
   searchTimer = setTimeout(loadItems, 250)
 }
 
-watch(() => route.fullPath, loadData)
+watch(() => route.fullPath, loadRouteData)
 
 async function loadData() {
   loading.value = true
@@ -264,6 +264,20 @@ async function loadData() {
     loading.value = false
   }
 }
+async function loadRouteData() {
+  loading.value = true
+  try {
+    if (selectedListID.value && !lists.value.some(list => list.id === selectedListID.value)) {
+      await loadData()
+      return
+    }
+    await loadItems()
+  } catch (err: any) {
+    showToast(err.response?.data?.message || '读取提醒失败', 'error')
+  } finally {
+    loading.value = false
+  }
+}
 async function loadItems() {
   const res = await getReminders({ view: view.value, list_id: selectedListID.value, q: search.value || undefined })
   items.value = res.data.data || []
@@ -278,7 +292,7 @@ async function submitQuick() {
     preset.value = ''
     quickExpanded.value = false
     quickFocused.value = false
-    await loadData()
+    await loadItems()
     changed()
     showToast('提醒已添加')
   } catch (err: any) {
@@ -330,7 +344,7 @@ async function saveEditor() {
     const { id, ...payload } = editing
     await updateReminder(id, payload)
     editorOpen.value = false
-    await loadData()
+    await loadItems()
     changed()
     showToast('提醒已保存')
   } catch (err: any) {
@@ -341,7 +355,7 @@ async function toggleComplete(item: ReminderItem) {
   try {
     if (item.completed_at) await restoreReminder(item.id)
     else await completeReminder(item.id)
-    await loadData()
+    await loadItems()
     changed()
     showToast(item.completed_at ? '已恢复提醒' : item.repeat_rule !== 'none' ? '已完成，下一次提醒已安排' : '做得好，已完成')
   } catch (err: any) { showToast(err.response?.data?.message || '操作失败', 'error') }
@@ -350,7 +364,7 @@ async function removeItem(item: ReminderItem) {
   if (!window.confirm(`删除“${item.title}”？`)) return
   try {
     await deleteReminder(item.id)
-    await loadData()
+    await loadItems()
     changed()
     showToast('提醒已删除')
   } catch (err: any) { showToast(err.response?.data?.message || '删除失败', 'error') }
@@ -359,7 +373,7 @@ async function snooze(item: ReminderItem, minutes: number) {
   const until = new Date(Date.now() + minutes * 60_000)
   try {
     await snoozeReminder(item.id, until.toISOString())
-    await loadData()
+    await loadItems()
     changed()
     showToast(`已稍后 ${minutes} 分钟提醒`)
   } catch (err: any) { showToast(err.response?.data?.message || '设置稍后提醒失败', 'error') }
@@ -386,7 +400,7 @@ function toLocalInput(value?: string | null) {
   return new Date(d.getTime() - offset * 60_000).toISOString().slice(0, 16)
 }
 function fromLocalInput(value: string) { return value ? new Date(value).toISOString() : null }
-function channelName(ch: ReminderChannel) { return ({ inapp: '站内', email: '邮件', sms: '短信', feishu: '飞书', qq: 'QQ' } as Record<string, string>)[ch] || ch }
+function channelName(ch: ReminderChannel) { return ({ inapp: '站内', email: '邮件', sms: '短信', feishu: '飞书', qq: 'QQ', dingtalk: '钉钉' } as Record<string, string>)[ch] || ch }
 function listColor(color: string) { return ({ blue: '#3182f6', violet: '#8b5cf6', rose: '#f43f5e', amber: '#f59e0b', emerald: '#10b981' } as Record<string, string>)[color] || '#3182f6' }
 function changed() { window.dispatchEvent(new CustomEvent('reminder-data-changed')) }
 function showToast(message: string, type: 'success' | 'error' = 'success') { toast.message = ''; setTimeout(() => Object.assign(toast, { message, type }), 0) }
@@ -399,7 +413,7 @@ function refreshRealtimeData() {
 
 onMounted(() => {
   loadData()
-  clockTimer = setInterval(() => { clockNow.value = Date.now() }, 1000)
+  clockTimer = setInterval(() => { clockNow.value = Date.now() }, 60_000)
   window.addEventListener('open-quick-reminder', focusQuickAdd)
   window.addEventListener('reminder-realtime', refreshRealtimeData)
   window.addEventListener('reminder-realtime-resume', refreshRealtimeData)
@@ -434,7 +448,7 @@ function onShortcut(e: KeyboardEvent) {
 .compact-input { @apply mt-1.5 h-9 w-full rounded-xl border border-border bg-surface px-3 text-xs font-medium text-foreground outline-none focus:border-brand-500/50; }
 .channel-pill { @apply rounded-xl border border-border bg-surface px-3 py-1.5 text-xs font-semibold text-muted-foreground transition disabled:cursor-not-allowed disabled:opacity-35; }
 .channel-pill.selected { @apply border-brand-500/30 bg-brand-500/10 text-brand-600 dark:text-brand-300; }
-.reminder-row { @apply relative flex min-h-[78px] items-center gap-3 overflow-hidden rounded-2xl border border-border/65 bg-surface/85 px-4 py-3.5 shadow-[0_6px_24px_-20px_rgba(15,23,42,.5)] backdrop-blur transition-all hover:-translate-y-0.5 hover:border-brand-500/20 hover:shadow-[0_16px_36px_-26px_rgba(15,23,42,.65)]; }
+.reminder-row { @apply relative flex min-h-[78px] items-center gap-3 overflow-hidden rounded-2xl border border-border/65 bg-surface/85 px-4 py-3.5 shadow-[0_6px_24px_-20px_rgba(15,23,42,.5)] backdrop-blur transition-all hover:-translate-y-0.5 hover:border-brand-500/20 hover:shadow-[0_16px_36px_-26px_rgba(15,23,42,.65)]; content-visibility: auto; contain-intrinsic-size: 78px; }
 .reminder-row::before { content: ''; position: absolute; inset: 0 auto 0 0; width: 2px; background: transparent; }
 .reminder-overdue::before { background: #f43f5e; }
 .reminder-completed { @apply opacity-60; }

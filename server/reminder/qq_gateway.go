@@ -18,6 +18,12 @@ import (
 
 const qqC2CIntent = 1 << 25 // GROUP_AND_C2C_EVENT
 
+const (
+	qqGatewayRetryInitial = 30 * time.Second
+	qqGatewayRetryMax     = 5 * time.Minute
+	qqGatewayWarnInterval = 10 * time.Minute
+)
+
 var qqGatewayState struct {
 	sync.Mutex
 	running bool
@@ -26,6 +32,12 @@ var qqGatewayState struct {
 // ensureQQGateway is called by the scheduler. It deliberately uses QQ's
 // outbound gateway connection, so localhost:8906 needs no public callback.
 func ensureQQGateway(db *gorm.DB) {
+	qqGatewayState.Lock()
+	if qqGatewayState.running {
+		qqGatewayState.Unlock()
+		return
+	}
+	qqGatewayState.Unlock()
 	if !qqConfigured(db) {
 		return
 	}
@@ -43,16 +55,33 @@ func ensureQQGateway(db *gorm.DB) {
 }
 
 func runQQGateway(db *gorm.DB) {
+	retryAfter := qqGatewayRetryInitial
+	var lastWarningAt time.Time
 	for {
 		settings, err := providerSettings(db, ChannelQQ)
 		if err != nil || settings["app_id"] == "" || settings["app_secret"] == "" {
 			return
 		}
 		if err := connectQQGateway(db, settings); err != nil {
-			logger.Warn("QQ gateway disconnected: %v", err)
+			now := time.Now()
+			if lastWarningAt.IsZero() || now.Sub(lastWarningAt) >= qqGatewayWarnInterval {
+				logger.Warn("QQ gateway disconnected; retrying in %s: %v", retryAfter, err)
+				lastWarningAt = now
+			}
 		}
-		time.Sleep(5 * time.Second)
+		time.Sleep(retryAfter)
+		retryAfter = nextQQGatewayRetry(retryAfter)
 	}
+}
+
+func nextQQGatewayRetry(current time.Duration) time.Duration {
+	if current <= 0 {
+		return qqGatewayRetryInitial
+	}
+	if current >= qqGatewayRetryMax/2 {
+		return qqGatewayRetryMax
+	}
+	return current * 2
 }
 
 func connectQQGateway(db *gorm.DB, settings map[string]string) error {

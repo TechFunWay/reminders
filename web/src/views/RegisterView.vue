@@ -1,5 +1,5 @@
 <template>
-  <AuthShell title="创建账号" subtitle="注册一个新账号以访问控制台">
+  <AuthShell :title="pageTitle" :subtitle="pageSubtitle">
     <!-- register disabled -->
     <div v-if="disabled" class="flex flex-col items-center text-center gap-3 rounded-2xl border border-white/10 bg-white/[0.03] px-6 py-10">
       <span class="w-12 h-12 rounded-full bg-amber-400/15 text-amber-300 flex items-center justify-center">
@@ -9,12 +9,17 @@
     </div>
 
     <form v-else @submit.prevent="handleRegister" class="space-y-5">
+      <div v-if="isFnOSBinding && !authStore.setupRequired" class="rounded-2xl border border-brand-400/30 bg-brand-400/10 px-5 py-4 text-sm text-white/85">
+        当前飞牛 NAS 用户 <span class="font-semibold text-brand-200">{{ fnosUsername || '已登录用户' }}</span> 尚未绑定应用账号。
+        <template v-if="fnosMode === 'bind'">请输入电脑端正在使用的应用账号密码；绑定后，两端会使用同一份提醒和通知方式。</template>
+        <template v-else>创建后将成为一个数据独立的新账号；如果电脑端已有数据，请改为绑定已有账号。</template>
+      </div>
       <div v-if="authStore.setupRequired" class="flex flex-col gap-2 rounded-2xl border border-brand-400/30 bg-brand-400/10 px-5 py-4 text-sm">
         <div class="flex items-center gap-2 font-semibold text-brand-300">
           <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-          您是首个用户
+          首次使用：使用飞牛 NAS 创建管理员
         </div>
-        <p class="text-white/80">注册后该账号将自动成为管理员，拥有全部管理权限。</p>
+        <p class="text-white/80">当前还没有任何用户。创建后该账号将自动成为管理员，并立即绑定当前飞牛 NAS 用户，之后可直接一键登录。</p>
       </div>
 
       <AuthField v-model="username" label="用户名" autocomplete="username" required placeholder="请输入用户名" autofocus>
@@ -29,7 +34,7 @@
         </template>
       </AuthField>
 
-      <AuthField v-model="confirmPassword" label="确认密码" type="password" autocomplete="new-password" required placeholder="请再次输入密码">
+      <AuthField v-if="!isFnOSBinding || fnosMode === 'register'" v-model="confirmPassword" label="确认密码" type="password" autocomplete="new-password" required placeholder="请再次输入密码">
         <template #icon>
           <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
         </template>
@@ -50,7 +55,11 @@
 
       <button type="submit" :disabled="loading" class="btn-premium">
         <svg v-if="loading" class="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
-        {{ loading ? '注册中...' : '注册' }}
+        {{ loading ? '处理中...' : submitLabel }}
+      </button>
+
+      <button v-if="isFnOSBinding && !authStore.setupRequired" type="button" :disabled="loading" @click="fnosMode = fnosMode === 'register' ? 'bind' : 'register'" class="w-full text-sm font-medium text-brand-300 hover:text-brand-200 transition-colors">
+        {{ fnosMode === 'register' ? '已有应用账号？验证并绑定' : '没有应用账号？创建并绑定' }}
       </button>
     </form>
 
@@ -62,9 +71,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
-import { register } from '../api/auth'
+import { ref, onMounted, computed } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
+import { register, bindFnOSAccount } from '../api/auth'
 import { getPublicConfigs } from '../api/config'
 import { useAuthStore } from '../stores/auth'
 import AuthShell from '../components/auth/AuthShell.vue'
@@ -72,32 +81,49 @@ import AuthField from '../components/auth/AuthField.vue'
 import { passwordValidationError } from '../utils/password'
 
 const router = useRouter()
+const route = useRoute()
 const authStore = useAuthStore()
 
-const username = ref('')
+const username = ref(typeof route.query.fnos_username === 'string' ? route.query.fnos_username : '')
 const password = ref('')
 const confirmPassword = ref('')
 const loading = ref(false)
 const errorMsg = ref('')
 const successMsg = ref('')
 const disabled = ref(false)
+const fnosMode = ref<'register' | 'bind'>(route.query.fnos_mode === 'bind' ? 'bind' : 'register')
+const isFnOSBinding = computed(() => import.meta.env.VITE_FNOS_APP === 'true' && route.query.fnos === 'bind')
+const fnosUsername = computed(() => typeof route.query.fnos_username === 'string' ? route.query.fnos_username : '')
+const pageTitle = computed(() => authStore.setupRequired
+  ? (isFnOSBinding.value ? '使用飞牛 NAS 创建管理员' : '创建管理员账号')
+  : (isFnOSBinding.value ? '绑定飞牛 NAS 账号' : '创建账号'))
+const pageSubtitle = computed(() => authStore.setupRequired
+  ? (isFnOSBinding.value ? '创建首个管理员账号，并绑定当前飞牛 NAS 用户' : '首次使用，请先完成管理员初始化')
+  : (isFnOSBinding.value ? '创建或绑定应用账号，之后即可使用飞牛 NAS 一键登录' : '注册一个新账号以访问控制台'))
+const submitLabel = computed(() => {
+  if (authStore.setupRequired && isFnOSBinding.value) return '创建管理员并绑定飞牛 NAS'
+  if (isFnOSBinding.value) return fnosMode.value === 'register' ? '创建并绑定' : '验证并绑定'
+  return '注册'
+})
 
 onMounted(async () => {
   try {
     const res = await getPublicConfigs()
     if (res.data?.code === 0) {
-      disabled.value = res.data.data?.allow_register === 'false' && !authStore.setupRequired
+      disabled.value = res.data.data?.allow_register === 'false' && !authStore.setupRequired && !isFnOSBinding.value
     }
   } catch {}
 })
 
 async function handleRegister() {
-  const validationError = passwordValidationError(password.value)
-  if (validationError) {
-    errorMsg.value = validationError
-    return
+  if (!isFnOSBinding.value || fnosMode.value === 'register') {
+    const validationError = passwordValidationError(password.value)
+    if (validationError) {
+      errorMsg.value = validationError
+      return
+    }
   }
-  if (password.value !== confirmPassword.value) {
+  if ((!isFnOSBinding.value || fnosMode.value === 'register') && password.value !== confirmPassword.value) {
     errorMsg.value = '两次密码不一致'
     return
   }
@@ -105,6 +131,18 @@ async function handleRegister() {
   errorMsg.value = ''
   successMsg.value = ''
   try {
+    if (isFnOSBinding.value) {
+      const res = await bindFnOSAccount(fnosMode.value, username.value, password.value)
+      if (res.data?.code === 0) {
+        authStore.setToken(res.data.data.token)
+        authStore.setUser(res.data.data.user)
+        authStore.resetInit()
+        router.push('/admin')
+      } else {
+        errorMsg.value = res.data?.message || '绑定失败'
+      }
+      return
+    }
     const res = await register(username.value, password.value)
     if (res.data?.code === 0) {
       if (authStore.setupRequired) {

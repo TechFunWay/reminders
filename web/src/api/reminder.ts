@@ -1,6 +1,6 @@
 import request from './request'
 
-export type ReminderChannel = 'inapp' | 'email' | 'sms' | 'feishu' | 'qq'
+export type ReminderChannel = 'inapp' | 'email' | 'sms' | 'feishu' | 'qq' | 'dingtalk'
 
 export interface ReminderList {
   id: number

@@ -1,12 +1,12 @@
 // Package logger provides a small dependency-free file logger with daily
-// rotation, automatic cleanup of old files, and a stdout mirror. Levels are
-// INFO / WARN / ERROR / AUDIT, each written to its own daily file
-// (e.g. logs/info-2006-01-02.log). Before Init is called every helper falls
-// back to stdout, so it is always safe to call.
+// rotation and automatic cleanup. Levels are INFO / WARN / ERROR / AUDIT,
+// each written to its own daily file (e.g. logs/info-2006-01-02.log). Console
+// mirroring is opt-in so background activity does not flood a service console.
 package logger
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +18,7 @@ type logger struct {
 	mu            sync.Mutex
 	logDir        string
 	retentionDays int
+	console       bool
 	files         map[string]*os.File
 	done          chan struct{}
 }
@@ -44,8 +45,9 @@ func currentRetention(fallback int) int {
 }
 
 // Init starts the logger writing into logDir, keeping retentionDays of history
-// (a value <= 0 disables cleanup). Safe to call once at startup.
-func Init(logDir string, retentionDays int) error {
+// (a value <= 0 disables cleanup). mirrorToConsole is intended only for
+// interactive debugging; normal service operation keeps logs in files.
+func Init(logDir string, retentionDays int, mirrorToConsole bool) error {
 	if err := os.MkdirAll(logDir, 0755); err != nil {
 		return fmt.Errorf("failed to create log directory: %w", err)
 	}
@@ -53,6 +55,7 @@ func Init(logDir string, retentionDays int) error {
 	l = &logger{
 		logDir:        logDir,
 		retentionDays: retentionDays,
+		console:       mirrorToConsole,
 		files:         make(map[string]*os.File),
 		done:          make(chan struct{}),
 	}
@@ -104,14 +107,36 @@ func Error(format string, args ...interface{}) { write("ERROR", format, args...)
 // audit trail lives in the audit package; this is the human-readable mirror.
 func Audit(format string, args ...interface{}) { write("AUDIT", format, args...) }
 
+// NewWriter adapts standard-library loggers, such as GORM's logger, so their
+// output follows the same file-only policy and daily rotation as app logs.
+func NewWriter(level string) io.Writer {
+	return lineWriter{level: strings.ToUpper(strings.TrimSpace(level))}
+}
+
+type lineWriter struct {
+	level string
+}
+
+func (w lineWriter) Write(p []byte) (int, error) {
+	message := strings.TrimSpace(string(p))
+	if message != "" {
+		level := w.level
+		if level == "" {
+			level = "INFO"
+		}
+		write(level, "%s", message)
+	}
+	return len(p), nil
+}
+
 func write(level, format string, args ...interface{}) {
 	ts := time.Now().Format("2006-01-02 15:04:05")
 	msg := fmt.Sprintf("%s [%s] %s\n", ts, level, fmt.Sprintf(format, args...))
 
-	// Always mirror to stdout.
-	fmt.Print(msg)
-
 	if l == nil {
+		// Init has not run yet, so a file destination is unavailable. Startup
+		// failures should still be visible to the invoking terminal.
+		fmt.Fprint(os.Stderr, msg)
 		return
 	}
 
@@ -119,6 +144,9 @@ func write(level, format string, args ...interface{}) {
 	defer l.mu.Unlock()
 	if f := l.getFile(level); f != nil {
 		f.WriteString(msg)
+	}
+	if l.console {
+		fmt.Fprint(os.Stdout, msg)
 	}
 }
 
