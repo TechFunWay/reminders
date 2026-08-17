@@ -1,7 +1,9 @@
 # Reminder
 
 面向中国大陆用户的轻量多渠道提醒应用。界面借鉴移动端提醒工具的低学习成本，支持清单、
-今天/计划/全部/已完成视图、重复提醒、稍后提醒，以及站内、邮件、短信、飞书和 QQ 通知。
+今天/计划/全部/已完成视图、重复提醒、稍后提醒，以及站内、邮件、短信、飞书、QQ 和钉钉通知。
+
+版本功能与修复记录见 [CHANGELOG.md](./CHANGELOG.md)。
 
 ## 界面预览
 
@@ -56,6 +58,7 @@ make start
 - 可配置短信 HTTP 网关；
 - 飞书企业自建应用机器人单聊；
 - QQ 机器人主动单聊；
+- 钉钉个人群自定义机器人；
 - 浅色/深色主题和响应式手机界面。
 
 ## 外部渠道配置
@@ -90,6 +93,27 @@ REMINDER_DATA_KEY
 渠道接收目标在数据库中使用 AES-GCM 加密。未设置 `REMINDER_DATA_KEY` 时，会从安装实例的
 内部 JWT 密钥派生独立加密密钥。
 
+### 钉钉个人提醒
+
+无需创建钉钉应用，也无需配置服务器环境变量。请使用 Windows 或 Mac 的钉钉电脑端操作；手机端不能
+创建或配置此机器人：
+
+1. 新建一个专用提醒群，或打开一个现有群。
+2. 如果不希望其他人看到提醒，请让群内只保留自己：可新建个人群，或将其他成员移出。
+3. 打开群设置，进入“群机器人 / 机器人”，添加“自定义机器人”。
+4. 安全设置选择“自定义关键词”，填写 `提醒`，复制 Webhook 地址。
+5. 在应用的“通知方式 → 钉钉群机器人”粘贴 Webhook，并发送测试。
+
+提醒会发送给该群的所有当前成员；群内只有你一人时，只有你能收到。每位用户的 Webhook 独立加密保存；
+应用只接受钉钉官方机器人地址。
+
+## 运行日志
+
+运行日志默认仅写入 `<data-dir>/logs/`，按日期和级别分为 `info-YYYY-MM-DD.log`、
+`warn-YYYY-MM-DD.log`、`error-YYYY-MM-DD.log` 与 `audit-YYYY-MM-DD.log`，默认保留 30 天。
+这避免通知通道或后台任务的重复错误刷屏终端；需要排查时可直接查看对应文件。仅本地调试时可使用
+`-log-console` 或 `LOG_CONSOLE=true` 同时输出到终端。
+
 ## 构建与测试
 
 ```bash
@@ -97,3 +121,19 @@ cd server && go test ./...
 cd web && npm run build
 make build
 ```
+
+### 发布打包
+
+```bash
+# 仅编译并打包飞牛 fnOS：生成 x86、ARM 两份 .fpk，不构建 Docker 镜像
+make package PACKAGE_TARGET=fnos
+
+# 所有桌面/服务器平台压缩包
+make package PACKAGE_TARGET=apps
+
+# 仅构建本地 Docker 镜像（按需执行）
+make package PACKAGE_TARGET=docker
+```
+
+`PACKAGE_TARGET=fnos` 会使用临时 Linux 编译容器生成 SQLite/CGO 二进制，但不会执行
+`docker build`、不会创建镜像标签，也不会推送镜像。

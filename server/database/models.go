@@ -3,15 +3,17 @@ package database
 import "time"
 
 type User struct {
-	ID          uint   `gorm:"primarykey"`
-	Username    string `gorm:"uniqueIndex;not null"`
-	Password    string `gorm:"not null"`
-	Role        string `gorm:"default:user"`
-	Status      int    `gorm:"default:1"`
-	APIKey      string
-	AuthVersion uint `gorm:"not null;default:1"`
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ID           uint   `gorm:"primarykey"`
+	Username     string `gorm:"uniqueIndex;not null"`
+	Password     string `gorm:"not null"`
+	Role         string `gorm:"default:user"`
+	Status       int    `gorm:"default:1"`
+	APIKey       string
+	AuthVersion  uint  `gorm:"not null;default:1"`
+	FnOSUserID   *uint `gorm:"uniqueIndex"`
+	FnOSUsername string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 type SystemConfig struct {

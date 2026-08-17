@@ -3,16 +3,17 @@ package reminder
 import "time"
 
 const (
-	ChannelInApp  = "inapp"
-	ChannelEmail  = "email"
-	ChannelSMS    = "sms"
-	ChannelFeishu = "feishu"
-	ChannelQQ     = "qq"
+	ChannelInApp    = "inapp"
+	ChannelEmail    = "email"
+	ChannelSMS      = "sms"
+	ChannelFeishu   = "feishu"
+	ChannelQQ       = "qq"
+	ChannelDingTalk = "dingtalk"
 )
 
 var supportedChannels = map[string]bool{
 	ChannelInApp: true, ChannelEmail: true, ChannelSMS: true,
-	ChannelFeishu: true, ChannelQQ: true,
+	ChannelFeishu: true, ChannelQQ: true, ChannelDingTalk: true,
 }
 
 type List struct {

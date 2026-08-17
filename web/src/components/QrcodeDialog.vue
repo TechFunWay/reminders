@@ -44,7 +44,10 @@ const qrUrl = ref('')
 
 watch(() => props.modelValue, async (val) => {
   if (val && props.content) {
-    qrUrl.value = `/api/qrcode?content=${encodeURIComponent(props.content)}&t=${Date.now()}`
+    const url = new URL('api/qrcode', document.baseURI)
+    url.searchParams.set('content', props.content)
+    url.searchParams.set('t', String(Date.now()))
+    qrUrl.value = url.toString()
   } else {
     qrUrl.value = ''
   }

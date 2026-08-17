@@ -18,9 +18,9 @@
         :required="required"
         :autocomplete="autocomplete"
         :placeholder="placeholder"
-        :autofocus="autofocus || undefined"
+        :autofocus="shouldAutofocus || undefined"
         :class="[
-          'w-full py-3 rounded-xl bg-white/[0.04] border border-white/10 text-white placeholder-white/30 focus:bg-white/[0.07] focus:border-brand-400/70 focus:ring-4 focus:ring-brand-500/20 outline-none transition-all',
+          'w-full py-3 rounded-xl bg-white/[0.04] border border-white/10 text-white placeholder-white/30 focus:bg-white/[0.07] focus:border-brand-400/70 focus:ring-4 focus:ring-brand-500/20 outline-none transition-colors duration-150',
           $slots.icon ? 'pl-11' : 'pl-4',
           isPassword ? 'pr-11' : 'pr-4',
         ]"
@@ -60,4 +60,6 @@ defineEmits<{ (e: 'update:modelValue', value: string): void }>()
 const show = ref(false)
 const isPassword = computed(() => props.type === 'password')
 const inputType = computed(() => (isPassword.value ? (show.value ? 'text' : 'password') : props.type))
+const isTouchDevice = typeof window !== 'undefined' && window.matchMedia('(hover: none) and (pointer: coarse)').matches
+const shouldAutofocus = computed(() => props.autofocus && !isTouchDevice)
 </script>

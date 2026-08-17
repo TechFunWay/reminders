@@ -220,7 +220,6 @@ watch(creatingList, async (open) => {
 })
 watch(() => route.fullPath, () => {
   mobileOpen.value = false
-  refreshNavigation()
 })
 
 function isActive(to: string) {
@@ -362,4 +361,11 @@ onBeforeUnmount(() => {
 .page-enter-from { opacity: 0; transform: translateY(5px); }
 .page-leave-to { opacity: 0; transform: translateY(-3px); }
 @media (min-width: 1024px) { .mobile-only { display: none !important; } }
+@media (max-width: 767px), (hover: none) and (pointer: coarse) {
+  .ambient-orb { display: none; }
+  .sidebar, .topbar, .mobile-tabbar {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
 </style>

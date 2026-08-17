@@ -107,11 +107,25 @@ func handleListLists(db *gorm.DB) gin.HandlerFunc {
 			response.ErrorInternal(c, "读取清单失败")
 			return
 		}
+		type openCountRow struct {
+			ListID    uint
+			OpenCount int64
+		}
+		var countRows []openCountRow
+		if err := db.Model(&Reminder{}).
+			Select("list_id, COUNT(*) AS open_count").
+			Where("user_id = ? AND completed_at IS NULL AND deleted_at IS NULL", userID).
+			Group("list_id").Scan(&countRows).Error; err != nil {
+			response.ErrorInternal(c, "统计清单失败")
+			return
+		}
+		openCounts := make(map[uint]int64, len(countRows))
+		for _, row := range countRows {
+			openCounts[row.ListID] = row.OpenCount
+		}
 		result := make([]ListDTO, 0, len(lists))
 		for _, list := range lists {
-			var count int64
-			_ = db.Model(&Reminder{}).Where("user_id = ? AND list_id = ? AND completed_at IS NULL AND deleted_at IS NULL", userID, list.ID).Count(&count).Error
-			result = append(result, ListDTO{List: list, OpenCount: count})
+			result = append(result, ListDTO{List: list, OpenCount: openCounts[list.ID]})
 		}
 		response.Success(c, result)
 	}
@@ -367,19 +381,36 @@ func handleSummary(db *gorm.DB) gin.HandlerFunc {
 		now := time.Now()
 		local := now.In(loc)
 		endToday := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc).AddDate(0, 0, 1)
-		count := func(where string, args ...interface{}) int64 {
-			var n int64
-			_ = db.Model(&Reminder{}).Where("user_id = ? AND deleted_at IS NULL", userID).Where(where, args...).Count(&n).Error
-			return n
+		var counts struct {
+			Today     int64
+			Planned   int64
+			OpenTotal int64
+			Completed int64
+			Overdue   int64
+		}
+		if err := db.Model(&Reminder{}).
+			Select(`
+				COALESCE(SUM(CASE WHEN completed_at IS NULL AND due_at IS NOT NULL AND due_at < ? THEN 1 ELSE 0 END), 0) AS today,
+				COALESCE(SUM(CASE WHEN completed_at IS NULL AND due_at IS NOT NULL THEN 1 ELSE 0 END), 0) AS planned,
+				COALESCE(SUM(CASE WHEN completed_at IS NULL THEN 1 ELSE 0 END), 0) AS open_total,
+				COALESCE(SUM(CASE WHEN completed_at IS NOT NULL THEN 1 ELSE 0 END), 0) AS completed,
+				COALESCE(SUM(CASE WHEN completed_at IS NULL AND due_at IS NOT NULL AND due_at < ? THEN 1 ELSE 0 END), 0) AS overdue`, endToday, now).
+			Where("user_id = ? AND deleted_at IS NULL", userID).
+			Scan(&counts).Error; err != nil {
+			response.ErrorInternal(c, "统计提醒失败")
+			return
 		}
 		var unread int64
-		_ = db.Model(&Notification{}).Where("user_id = ? AND read_at IS NULL", userID).Count(&unread).Error
+		if err := db.Model(&Notification{}).Where("user_id = ? AND read_at IS NULL", userID).Count(&unread).Error; err != nil {
+			response.ErrorInternal(c, "统计通知失败")
+			return
+		}
 		response.Success(c, gin.H{
-			"today":     count("completed_at IS NULL AND due_at IS NOT NULL AND due_at < ?", endToday),
-			"planned":   count("completed_at IS NULL AND due_at IS NOT NULL"),
-			"all":       count("completed_at IS NULL"),
-			"completed": count("completed_at IS NOT NULL"),
-			"overdue":   count("completed_at IS NULL AND due_at IS NOT NULL AND due_at < ?", now),
+			"today":     counts.Today,
+			"planned":   counts.Planned,
+			"all":       counts.OpenTotal,
+			"completed": counts.Completed,
+			"overdue":   counts.Overdue,
 			"unread":    unread,
 		})
 	}

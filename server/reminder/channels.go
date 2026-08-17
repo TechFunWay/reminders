@@ -304,6 +304,7 @@ func channelStatuses(db *gorm.DB, userID uint) []ChannelStatus {
 		{Channel: ChannelSMS, Label: "手机短信", Configured: smsConfigured(db), Description: "无需打开应用即可收到"},
 		{Channel: ChannelFeishu, Label: "飞书机器人", Configured: feishuConfigured(db), Description: "由企业自建应用机器人单聊提醒"},
 		{Channel: ChannelQQ, Label: "QQ 机器人", Configured: qqConfigured(db), Description: "通过 QQ 机器人主动单聊提醒"},
+		{Channel: ChannelDingTalk, Label: "钉钉群机器人", Configured: true, Description: "个人群自定义机器人，无需创建钉钉应用"},
 	}
 	for i := range defs {
 		if defs[i].Channel == ChannelQQ {
@@ -345,6 +346,8 @@ func normalizeTarget(channel, raw string) (string, error) {
 		if target == "" || len(target) > 200 {
 			return "", errors.New("请输入有效的平台 OpenID")
 		}
+	case ChannelDingTalk:
+		return normalizeDingTalkWebhook(target)
 	default:
 		return "", errors.New("不支持的通知渠道")
 	}
@@ -368,12 +371,35 @@ func maskTarget(channel, target string) string {
 		if len(target) == 11 {
 			return target[:3] + "****" + target[7:]
 		}
+	case ChannelDingTalk:
+		return "钉钉机器人 Webhook（已加密）"
 	default:
 		if len(target) > 10 {
 			return target[:5] + "…" + target[len(target)-4:]
 		}
 	}
 	return target
+}
+
+// normalizeDingTalkWebhook only accepts the official custom-robot endpoint.
+// A user-provided webhook is an outbound-request capability, so accepting an
+// arbitrary URL here would turn a personal channel binding into an SSRF sink.
+func normalizeDingTalkWebhook(raw string) (string, error) {
+	endpoint, err := url.ParseRequestURI(strings.TrimSpace(raw))
+	if err != nil || !strings.EqualFold(endpoint.Scheme, "https") ||
+		!strings.EqualFold(endpoint.Hostname(), "oapi.dingtalk.com") || endpoint.Port() != "" ||
+		endpoint.User != nil || endpoint.Path != "/robot/send" || endpoint.Fragment != "" {
+		return "", errors.New("请输入有效的钉钉自定义机器人 Webhook 地址")
+	}
+	query := endpoint.Query()
+	tokens, ok := query["access_token"]
+	if !ok || len(query) != 1 || len(tokens) != 1 || strings.TrimSpace(tokens[0]) == "" || len(tokens[0]) > 500 {
+		return "", errors.New("请粘贴仅含 access_token 的钉钉机器人 Webhook 地址")
+	}
+	endpoint.Scheme = "https"
+	endpoint.Host = "oapi.dingtalk.com"
+	endpoint.RawQuery = url.Values{"access_token": []string{tokens[0]}}.Encode()
+	return endpoint.String(), nil
 }
 
 func encryptionKey(db *gorm.DB) ([]byte, error) {
@@ -469,6 +495,8 @@ func sendChannel(ctx context.Context, db *gorm.DB, channel string, userID uint, 
 		return sendFeishu(ctx, db, target, item, idempotencyKey)
 	case ChannelQQ:
 		return sendQQ(ctx, db, target, item, idempotencyKey)
+	case ChannelDingTalk:
+		return sendDingTalk(ctx, db, target, item)
 	default:
 		return sendResult{}, &deliveryError{Code: "CHANNEL_UNSUPPORTED", Message: "不支持的通知渠道", Permanent: true}
 	}
@@ -600,6 +628,34 @@ func sendSMSWebhook(ctx context.Context, db *gorm.DB, target string, item Remind
 		return sendResult{}, err
 	}
 	return sendResult{ExternalID: out.ID}, nil
+}
+
+// sendDingTalk delivers to a user-owned custom group robot. The user creates
+// that robot in DingTalk and pastes only its official webhook; no app ID,
+// OAuth callback, or organisation-wide administrator configuration is needed.
+func sendDingTalk(ctx context.Context, db *gorm.DB, webhook string, item Reminder) (sendResult, error) {
+	var result struct {
+		ErrCode *int   `json:"errcode"`
+		ErrMsg  string `json:"errmsg"`
+	}
+	if err := postJSON(ctx, webhook, "", map[string]interface{}{
+		"msgtype": "text",
+		"text":    map[string]string{"content": dingTalkNotificationText(db, item)},
+	}, &result); err != nil {
+		return sendResult{}, doNotRetryExternalSend(err)
+	}
+	if result.ErrCode == nil || *result.ErrCode != 0 {
+		code := "未知"
+		if result.ErrCode != nil {
+			code = strconv.Itoa(*result.ErrCode)
+		}
+		return sendResult{}, &deliveryError{
+			Code:      "DINGTALK_SEND_FAILED",
+			Message:   "钉钉机器人拒绝了消息，请检查机器人仍在群内、Webhook 是否完整，并确认安全关键词为“提醒”（错误码：" + code + "）",
+			Permanent: true,
+		}
+	}
+	return sendResult{}, nil
 }
 
 func sendFeishu(ctx context.Context, db *gorm.DB, openID string, item Reminder, idempotencyKey string) (sendResult, error) {
@@ -774,6 +830,17 @@ func notificationBrand(db *gorm.DB) string {
 
 func robotNotificationText(db *gorm.DB, item Reminder) string {
 	text := "【" + notificationBrand(db) + "】\n⏰ " + item.Title + "\n" + notificationBody(item)
+	if item.Notes != "" {
+		text += "\n" + item.Notes
+	}
+	return text
+}
+
+// DingTalk custom robots can use a simple keyword safety rule. Every message
+// deliberately includes “提醒”, allowing a user to set that exact keyword
+// without managing a signing secret.
+func dingTalkNotificationText(db *gorm.DB, item Reminder) string {
+	text := "【" + notificationBrand(db) + "】\n⏰ 提醒：" + item.Title + "\n" + notificationBody(item)
 	if item.Notes != "" {
 		text += "\n" + item.Notes
 	}

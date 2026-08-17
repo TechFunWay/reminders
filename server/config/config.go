@@ -24,6 +24,13 @@ type Config struct {
 	CORSOrigin         string
 	LogDir             string
 	LogRetentionDays   int
+	LogConsole         bool
+	// FnOSApp enables the fnOS unified-gateway integration. Ordinary binaries
+	// and Docker deployments keep their TCP listener and never trust fnOS
+	// gateway identity headers.
+	FnOSApp       bool
+	GatewaySocket string
+	GatewayPrefix string
 }
 
 var C Config
@@ -41,6 +48,10 @@ func Parse() Config {
 	flag.IntVar(&C.RateLimit, "rate-limit", 20, "公开接口每分钟最大请求数，0 表示不限（环境变量 RATE_LIMIT）")
 	flag.StringVar(&C.CORSOrigin, "cors-origin", "*", "允许的 CORS 来源，* 表示全部（环境变量 CORS_ORIGIN）")
 	flag.IntVar(&C.LogRetentionDays, "log-retention-days", 30, "日志文件保留天数，0 表示永久保留（环境变量 LOG_RETENTION_DAYS）")
+	flag.BoolVar(&C.LogConsole, "log-console", false, "同时将运行日志输出到终端（默认 false，环境变量 LOG_CONSOLE）")
+	flag.BoolVar(&C.FnOSApp, "fnos-app", false, "以飞牛 fnOS 统一网关应用模式运行")
+	flag.StringVar(&C.GatewaySocket, "gateway-socket", "", "飞牛统一网关 Unix Socket 路径（仅 -fnos-app）")
+	flag.StringVar(&C.GatewayPrefix, "gateway-prefix", "/app/techfunway-reminders", "飞牛统一网关路径前缀（仅 -fnos-app）")
 	flag.Usage = PrintHelp
 	flag.Parse()
 
@@ -79,6 +90,11 @@ func Parse() Config {
 	if v := os.Getenv("LOG_RETENTION_DAYS"); v != "" {
 		if i, err := strconv.Atoi(v); err == nil {
 			C.LogRetentionDays = i
+		}
+	}
+	if v := os.Getenv("LOG_CONSOLE"); v != "" {
+		if enabled, err := strconv.ParseBool(v); err == nil {
+			C.LogConsole = enabled
 		}
 	}
 
@@ -128,6 +144,14 @@ func PrintHelp() {
         允许的 CORS 来源，* 表示全部（默认 "*"，环境变量 CORS_ORIGIN）
   -log-retention-days int
         日志文件保留天数，0 表示永久保留（默认 30，环境变量 LOG_RETENTION_DAYS）
+  -log-console
+        同时将运行日志输出到终端（默认 false，环境变量 LOG_CONSOLE）
+  -fnos-app
+        以飞牛 fnOS 统一网关应用模式运行（默认 false）
+  -gateway-socket string
+        飞牛统一网关 Unix Socket 路径（仅 -fnos-app）
+  -gateway-prefix string
+        飞牛统一网关路径前缀（默认 "/app/techfunway-reminders"，仅 -fnos-app）
   -reset-admin-password
         将管理员密码重置为 admin123 后退出
   -version
@@ -136,7 +160,7 @@ func PrintHelp() {
         显示本帮助
 
 环境变量:
-  PORT、DATA_DIR、DB_PATH、ENV、RATE_LIMIT、CORS_ORIGIN、LOG_RETENTION_DAYS
+  PORT、DATA_DIR、DB_PATH、ENV、RATE_LIMIT、CORS_ORIGIN、LOG_RETENTION_DAYS、LOG_CONSOLE
   环境变量的优先级高于启动参数。
 
 示例:

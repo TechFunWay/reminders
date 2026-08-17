@@ -14,6 +14,18 @@ export function register(username: string, password: string) {
   })
 }
 
+export function fnosLogin() {
+  return request.post('/api/auth/fnos/login')
+}
+
+export function getFnOSIdentity() {
+  return request.get('/api/auth/fnos/identity')
+}
+
+export function bindFnOSAccount(mode: 'register' | 'bind', username: string, password: string) {
+  return request.post('/api/auth/fnos/bind', { mode, username, password })
+}
+
 export function checkAuth() {
   return request.get('/api/auth/check')
 }

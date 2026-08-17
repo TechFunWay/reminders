@@ -56,7 +56,7 @@ func init() {
 
 	scheduler.Register(scheduler.Job{
 		Name:       "reminder-delivery",
-		Interval:   time.Second,
+		Interval:   time.Minute,
 		RunAtStart: true,
 		Run: func() {
 			if appDB != nil {
@@ -65,7 +65,7 @@ func init() {
 		},
 	})
 	scheduler.Register(scheduler.Job{
-		Name: "reminder-qq-gateway", Interval: 5 * time.Second,
+		Name: "reminder-qq-gateway", Interval: 30 * time.Second,
 		Run: func() {
 			if appDB != nil {
 				ensureQQGateway(appDB)

@@ -66,3 +66,52 @@ func TestResolveFeishuOpenIDByEmail(t *testing.T) {
 		t.Fatalf("OpenID = %q", got)
 	}
 }
+
+func TestNormalizeDingTalkWebhook(t *testing.T) {
+	got, err := normalizeTarget(ChannelDingTalk, "https://oapi.dingtalk.com/robot/send?access_token=test-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "https://oapi.dingtalk.com/robot/send?access_token=test-token"; got != want {
+		t.Fatalf("webhook = %q, want %q", got, want)
+	}
+	for _, raw := range []string{
+		"http://oapi.dingtalk.com/robot/send?access_token=test-token",
+		"https://example.com/robot/send?access_token=test-token",
+		"https://oapi.dingtalk.com/robot/send?access_token=test-token&sign=stale",
+		"https://oapi.dingtalk.com/robot/send",
+	} {
+		if _, err := normalizeTarget(ChannelDingTalk, raw); err == nil {
+			t.Fatalf("expected %q to be rejected", raw)
+		}
+	}
+	if got := maskTarget(ChannelDingTalk, "https://oapi.dingtalk.com/robot/send?access_token=secret"); got != "钉钉机器人 Webhook（已加密）" {
+		t.Fatalf("masked webhook = %q", got)
+	}
+}
+
+func TestSendDingTalkUsesKeywordCompatibleText(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %s", r.Method)
+		}
+		var payload struct {
+			MsgType string `json:"msgtype"`
+			Text    struct {
+				Content string `json:"content"`
+			} `json:"text"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.MsgType != "text" || !strings.Contains(payload.Text.Content, "提醒：喝水") {
+			t.Fatalf("unexpected DingTalk payload: %#v", payload)
+		}
+		_, _ = w.Write([]byte(`{"errcode":0,"errmsg":"ok"}`))
+	}))
+	defer server.Close()
+
+	if _, err := sendDingTalk(context.Background(), nil, server.URL, Reminder{Title: "喝水"}); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -25,6 +25,7 @@ start_process() {
     fi
 
     mkdir -p "${DATA_DIR}/db" "${DATA_DIR}/uploads" "${DATA_DIR}/logs"
+    rm -f "${APP_DIR}/app.sock"
 
     # Optional runtime tuning collected by wizard/config. Values persist as
     # environment variables; only forward them when set so defaults apply otherwise.
@@ -33,13 +34,16 @@ start_process() {
     [ -n "${wizard_cors_origin}" ] && extra_args+=(-cors-origin "${wizard_cors_origin}")
     [ -n "${wizard_log_retention_days}" ] && extra_args+=(-log-retention-days "${wizard_log_retention_days}")
 
-    log_msg "Starting 提醒事项 on port ${PORT} ..."
+    log_msg "Starting 提醒事项 through the fnOS unified gateway and port ${PORT} ..."
 
     cd "${APP_DIR}"
     ./reminder \
         -data-dir "${DATA_DIR}" \
         -web-dir "${WEB_DIR}" \
         -port "${PORT}" \
+        -fnos-app \
+        -gateway-prefix "/app/techfunway-reminders" \
+        -gateway-socket "${APP_DIR}/app.sock" \
         -logmode release "${extra_args[@]}" >> /dev/null 2>&1 &
 
     printf "%s" "$!" > ${PID_FILE}

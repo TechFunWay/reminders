@@ -3,10 +3,13 @@ package server
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -60,7 +63,7 @@ func Start() {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
-	if err := logger.Init(cfg.LogDir, cfg.LogRetentionDays); err != nil {
+	if err := logger.Init(cfg.LogDir, cfg.LogRetentionDays, cfg.LogConsole); err != nil {
 		fmt.Printf("Failed to init logger: %v\n", err)
 		os.Exit(1)
 	}
@@ -117,17 +120,6 @@ func Start() {
 	sched := scheduler.Start()
 	defer sched.Stop()
 
-	srv := &http.Server{
-		Addr:              fmt.Sprintf(":%d", cfg.Port),
-		Handler:           r,
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       15 * time.Second,
-		// Streaming endpoints such as Reminder SSE stay open indefinitely.
-		// Per-request/provider operations enforce their own timeouts.
-		WriteTimeout: 0,
-		IdleTimeout:  60 * time.Second,
-	}
-
 	logger.Info("========================================")
 	logger.Info("  %s %s", version.AppName, version.Version)
 	logger.Info("========================================")
@@ -135,18 +127,43 @@ func Start() {
 	logger.Info("  Database:    %s", cfg.DBPath)
 	logger.Info("  Web Dir:     %s", cfg.WebDir)
 	logger.Info("  Upload Dir:  %s", cfg.UploadDir)
-	logger.Info("  Listening:   http://localhost:%d", cfg.Port)
+	if cfg.FnOSApp {
+		logger.Info("  Gateway:     %s", cfg.GatewayPrefix)
+		logger.Info("  Socket:      %s", cfg.GatewaySocket)
+	}
+	logger.Info("  Access URL:  http://localhost:%d", cfg.Port)
 	if cfg.RateLimit > 0 {
 		logger.Info("  Rate Limit:  %d req/min per IP", cfg.RateLimit)
 	}
 	logger.Info("========================================")
 
-	go func() {
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error("Server error: %v", err)
-			os.Exit(1)
+	listeners, err := listen(cfg)
+	if err != nil {
+		logger.Error("Failed to listen: %v", err)
+		os.Exit(1)
+	}
+	for _, listener := range listeners {
+		defer listener.Listener.Close()
+	}
+	if cfg.FnOSApp {
+		defer os.Remove(cfg.GatewaySocket)
+	}
+
+	servers := make([]*http.Server, 0, len(listeners))
+	for _, listener := range listeners {
+		handler := http.Handler(r)
+		if !listener.IsFnOSGateway {
+			handler = newDirectHandler(r, cfg)
 		}
-	}()
+		srv := newHTTPServer(handler, listener.IsFnOSGateway)
+		servers = append(servers, srv)
+		go func(srv *http.Server, listener net.Listener) {
+			if err := srv.Serve(listener); err != nil && err != http.ErrServerClosed {
+				logger.Error("Server error: %v", err)
+				os.Exit(1)
+			}
+		}(srv, listener.Listener)
+	}
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -157,13 +174,84 @@ func Start() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := srv.Shutdown(ctx); err != nil {
-		logger.Error("Server forced to shutdown: %v", err)
+	for _, srv := range servers {
+		if err := srv.Shutdown(ctx); err != nil {
+			logger.Error("Server forced to shutdown: %v", err)
+		}
 	}
 
 	apps.ShutdownAll()
 
 	logger.Info("Server exited")
+}
+
+func newDirectHandler(handler http.Handler, cfg config.Config) http.Handler {
+	if !cfg.FnOSApp {
+		return handler
+	}
+	prefix := strings.TrimSuffix(cfg.GatewayPrefix, "/") + "/"
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			http.Redirect(w, r, prefix, http.StatusTemporaryRedirect)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	})
+}
+
+type listenerBinding struct {
+	Listener      net.Listener
+	IsFnOSGateway bool
+}
+
+func newHTTPServer(handler http.Handler, fnOSGateway bool) *http.Server {
+	srv := &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		// Reminder's SSE connections must stay open indefinitely.
+		WriteTimeout: 0,
+		IdleTimeout:  60 * time.Second,
+	}
+	if fnOSGateway {
+		srv.ConnContext = func(ctx context.Context, _ net.Conn) context.Context {
+			return user.MarkFnOSGateway(ctx)
+		}
+	}
+	return srv
+}
+
+func listen(cfg config.Config) ([]listenerBinding, error) {
+	tcpListener, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.Port))
+	if err != nil {
+		return nil, err
+	}
+	listeners := []listenerBinding{{Listener: tcpListener}}
+	if !cfg.FnOSApp {
+		return listeners, nil
+	}
+	if cfg.GatewaySocket == "" {
+		tcpListener.Close()
+		return nil, fmt.Errorf("-fnos-app requires -gateway-socket")
+	}
+	if !strings.HasPrefix(cfg.GatewayPrefix, "/app/") {
+		tcpListener.Close()
+		return nil, fmt.Errorf("-gateway-prefix must begin with /app/")
+	}
+	if err := os.MkdirAll(filepath.Dir(cfg.GatewaySocket), 0755); err != nil {
+		tcpListener.Close()
+		return nil, fmt.Errorf("create gateway socket directory: %w", err)
+	}
+	if err := os.Remove(cfg.GatewaySocket); err != nil && !os.IsNotExist(err) {
+		tcpListener.Close()
+		return nil, fmt.Errorf("remove stale gateway socket: %w", err)
+	}
+	listener, err := net.Listen("unix", cfg.GatewaySocket)
+	if err != nil {
+		tcpListener.Close()
+		return nil, fmt.Errorf("listen on gateway socket: %w", err)
+	}
+	return append(listeners, listenerBinding{Listener: listener, IsFnOSGateway: true}), nil
 }
 
 // NewRouter builds the full API router (all middleware, routes and registered
@@ -176,7 +264,11 @@ func NewRouter(cfg config.Config, db *gorm.DB, jwtSecret string) *gin.Engine {
 	r.Use(middleware.CORS(cfg.CORSOrigin))
 	r.Use(middleware.LimitJSONBody(1 << 20))
 
-	api := r.Group("/api")
+	appGroup := r.Group("")
+	if cfg.FnOSApp {
+		appGroup = r.Group(strings.TrimSuffix(cfg.GatewayPrefix, "/"))
+	}
+	api := appGroup.Group("/api")
 
 	api.GET("/version", func(c *gin.Context) {
 		response.Success(c, version.GetVersion())
@@ -223,9 +315,9 @@ func NewRouter(cfg config.Config, db *gorm.DB, jwtSecret string) *gin.Engine {
 	// File upload requires authentication; uploaded content is still readable by
 	// URL so it can be embedded in public pages.
 	authGroup.POST("/upload", upload.HandleUpload(cfg.UploadDir))
-	r.GET("/uploads/*filepath", upload.ServeUpload(cfg.UploadDir))
+	appGroup.GET("/uploads/*filepath", upload.ServeUpload(cfg.UploadDir))
 
-	user.RegisterRoutes(publicGroup, optionalAuthGroup, authGroup, adminGroup, db)
+	user.RegisterRoutes(publicGroup, optionalAuthGroup, authGroup, adminGroup, db, cfg.FnOSApp)
 
 	// Admin operation log (browse + CSV export).
 	audit.RegisterRoutes(adminGroup, db)
@@ -235,20 +327,25 @@ func NewRouter(cfg config.Config, db *gorm.DB, jwtSecret string) *gin.Engine {
 	apps.SetupProtectedAll(authGroup, adminGroup, db)
 
 	if cfg.WebDir != "" {
-		r.Static("/assets", cfg.WebDir+"/assets")
-		r.StaticFile("/favicon.ico", cfg.WebDir+"/favicon.ico")
-		r.StaticFile("/favicon.svg", cfg.WebDir+"/favicon.svg")
-		r.StaticFile("/favicon-16.png", cfg.WebDir+"/favicon-16.png")
-		r.StaticFile("/favicon-32.png", cfg.WebDir+"/favicon-32.png")
-		r.StaticFile("/favicon-192.png", cfg.WebDir+"/favicon-192.png")
-		r.StaticFile("/favicon-512.png", cfg.WebDir+"/favicon-512.png")
-		r.StaticFile("/apple-touch-icon.png", cfg.WebDir+"/apple-touch-icon.png")
-		r.GET("/manifest.webmanifest", func(c *gin.Context) {
+		appGroup.Static("/assets", cfg.WebDir+"/assets")
+		appGroup.StaticFile("/favicon.ico", cfg.WebDir+"/favicon.ico")
+		appGroup.StaticFile("/favicon.svg", cfg.WebDir+"/favicon.svg")
+		appGroup.StaticFile("/favicon-16.png", cfg.WebDir+"/favicon-16.png")
+		appGroup.StaticFile("/favicon-32.png", cfg.WebDir+"/favicon-32.png")
+		appGroup.StaticFile("/favicon-192.png", cfg.WebDir+"/favicon-192.png")
+		appGroup.StaticFile("/favicon-512.png", cfg.WebDir+"/favicon-512.png")
+		appGroup.StaticFile("/apple-touch-icon.png", cfg.WebDir+"/apple-touch-icon.png")
+		appGroup.GET("/manifest.webmanifest", func(c *gin.Context) {
 			c.Header("Content-Type", "application/manifest+json")
 			c.File(cfg.WebDir + "/manifest.webmanifest")
 		})
 		r.NoRoute(func(c *gin.Context) {
-			c.File(cfg.WebDir + "/index.html")
+			prefix := strings.TrimSuffix(cfg.GatewayPrefix, "/")
+			if !cfg.FnOSApp || c.Request.URL.Path == prefix || strings.HasPrefix(c.Request.URL.Path, prefix+"/") {
+				c.File(cfg.WebDir + "/index.html")
+				return
+			}
+			c.Status(http.StatusNotFound)
 		})
 	}
 

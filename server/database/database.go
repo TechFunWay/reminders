@@ -2,8 +2,9 @@ package database
 
 import (
 	"log"
-	"os"
 	"time"
+
+	"smallgo/server/logger"
 
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -38,7 +39,7 @@ func RegisterModels(models ...interface{}) {
 func InitDB(dbPath string) (*gorm.DB, error) {
 	// Keep GORM quiet about expected "record not found" lookups (used heavily
 	// for upsert-style config init) while still surfacing slow queries/errors.
-	gormLog := gormlogger.New(log.New(os.Stdout, "", 0), gormlogger.Config{
+	gormLog := gormlogger.New(log.New(logger.NewWriter("WARN"), "", 0), gormlogger.Config{
 		SlowThreshold:             time.Second,
 		LogLevel:                  gormlogger.Warn,
 		IgnoreRecordNotFoundError: true,

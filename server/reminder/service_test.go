@@ -2,10 +2,13 @@ package reminder
 
 import (
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"smallgo/server/database"
+
+	"gorm.io/gorm"
 )
 
 func testDB(t *testing.T) func() {
@@ -160,5 +163,43 @@ func TestReminderOwnershipIsolation(t *testing.T) {
 	}
 	if err := deleteReminder(appDB, 200, created.ID); err == nil {
 		t.Fatal("another user must not delete the reminder")
+	}
+}
+
+func TestListRemindersLoadsRelatedDataInConstantQueries(t *testing.T) {
+	cleanup := testDB(t)
+	defer cleanup()
+
+	const userID = 55
+	for i := 0; i < 30; i++ {
+		_, err := createReminder(appDB, userID, SaveReminderInput{
+			Title: "批量提醒", RepeatRule: "none", Channels: []string{ChannelInApp, ChannelEmail},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var queryCount atomic.Int64
+	if err := appDB.Callback().Query().Before("gorm:query").Register("test:list-query-count", func(*gorm.DB) {
+		queryCount.Add(1)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := listReminders(appDB, userID, "all", "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 30 {
+		t.Fatalf("expected 30 reminders, got %d", len(items))
+	}
+	if got := queryCount.Load(); got != 3 {
+		t.Fatalf("expected 3 fixed queries, got %d", got)
+	}
+	for _, item := range items {
+		if item.ListName == "" || len(item.Channels) != 2 {
+			t.Fatalf("missing related data: list=%q channels=%v", item.ListName, item.Channels)
+		}
 	}
 }
