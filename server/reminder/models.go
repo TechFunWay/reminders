@@ -30,33 +30,50 @@ type List struct {
 }
 
 type Reminder struct {
-	ID           uint              `gorm:"primarykey" json:"id"`
-	UserID       uint              `gorm:"not null;index:idx_reminders_user_due;index:idx_reminders_user_completed" json:"-"`
-	ListID       uint              `gorm:"not null;index" json:"list_id"`
-	Title        string            `gorm:"size:200;not null" json:"title"`
-	Notes        string            `gorm:"type:text" json:"notes"`
-	Priority     int               `gorm:"not null;default:0" json:"priority"`
-	DueAt        *time.Time        `gorm:"index:idx_reminders_user_due" json:"due_at"`
-	AllDay       bool              `gorm:"not null;default:false" json:"all_day"`
-	RepeatRule   string            `gorm:"size:16;not null;default:none" json:"repeat_rule"`
-	CompletedAt  *time.Time        `gorm:"index:idx_reminders_user_completed" json:"completed_at"`
-	SnoozedUntil *time.Time        `json:"snoozed_until"`
-	Position     int               `gorm:"not null;default:0" json:"position"`
-	Version      uint              `gorm:"not null;default:1" json:"version"`
-	CreatedAt    time.Time         `json:"created_at"`
-	UpdatedAt    time.Time         `json:"updated_at"`
-	DeletedAt    *time.Time        `gorm:"index" json:"-"`
-	Channels     []ReminderChannel `gorm:"foreignKey:ReminderID" json:"-"`
+	ID         uint       `gorm:"primarykey" json:"id"`
+	UserID     uint       `gorm:"not null;index:idx_reminders_user_due;index:idx_reminders_user_completed" json:"-"`
+	ListID     uint       `gorm:"not null;index" json:"list_id"`
+	Title      string     `gorm:"size:200;not null" json:"title"`
+	Notes      string     `gorm:"type:text" json:"notes"`
+	Priority   int        `gorm:"not null;default:0" json:"priority"`
+	DueAt      *time.Time `gorm:"index:idx_reminders_user_due" json:"due_at"`
+	AllDay     bool       `gorm:"not null;default:false" json:"all_day"`
+	RepeatRule string     `gorm:"size:16;not null;default:none" json:"repeat_rule"`
+	// Calendar selects which calendar the repeat rule follows: "solar"
+	// (Gregorian, default) or "lunar" (Chinese lunar calendar). Only
+	// monthly/yearly observe the lunar calendar; daily and weekly are
+	// calendar-independent and always stay "solar".
+	Calendar string `gorm:"size:8;not null;default:solar" json:"calendar"`
+	// LunarAnchor stores the lunar month/day this reminder recurs on when
+	// Calendar is "lunar" and the rule is monthly/yearly, encoded as "M:D"
+	// where a negative month denotes the leap month. For monthly rules only
+	// the day part is used. Empty for every other combination.
+	LunarAnchor string `gorm:"size:8" json:"lunar_anchor,omitempty"`
+	// RepeatNotifyMinutes re-notifies an uncompleted reminder on a fixed
+	// interval after each due time; 0 disables the behaviour.
+	RepeatNotifyMinutes int               `gorm:"not null;default:0" json:"repeat_notify_minutes"`
+	CompletedAt         *time.Time        `gorm:"index:idx_reminders_user_completed" json:"completed_at"`
+	SnoozedUntil        *time.Time        `json:"snoozed_until"`
+	Position            int               `gorm:"not null;default:0" json:"position"`
+	Version             uint              `gorm:"not null;default:1" json:"version"`
+	CreatedAt           time.Time         `json:"created_at"`
+	UpdatedAt           time.Time         `json:"updated_at"`
+	DeletedAt           *time.Time        `gorm:"index" json:"-"`
+	Channels            []ReminderChannel `gorm:"foreignKey:ReminderID" json:"-"`
 }
 
 type ReminderChannel struct {
-	ID         uint      `gorm:"primarykey" json:"id"`
-	ReminderID uint      `gorm:"not null;uniqueIndex:idx_reminder_channel" json:"reminder_id"`
-	UserID     uint      `gorm:"not null;index" json:"-"`
-	Channel    string    `gorm:"size:16;not null;uniqueIndex:idx_reminder_channel" json:"channel"`
-	Enabled    bool      `gorm:"not null;default:true" json:"enabled"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	ID         uint   `gorm:"primarykey" json:"id"`
+	ReminderID uint   `gorm:"not null;uniqueIndex:idx_reminder_channel" json:"reminder_id"`
+	UserID     uint   `gorm:"not null;index" json:"-"`
+	Channel    string `gorm:"size:16;not null;uniqueIndex:idx_reminder_channel" json:"channel"`
+	Enabled    bool   `gorm:"not null;default:true" json:"enabled"`
+	// Targets stores a JSON array of ChannelBinding IDs this reminder delivers
+	// to. Only meaningful for the email channel; empty means every active
+	// binding of the user.
+	Targets   string    `gorm:"type:text" json:"-"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type Completion struct {
@@ -70,8 +87,8 @@ type Completion struct {
 
 type ChannelBinding struct {
 	ID            uint       `gorm:"primarykey" json:"id"`
-	UserID        uint       `gorm:"not null;uniqueIndex:idx_user_channel_binding" json:"-"`
-	Channel       string     `gorm:"size:16;not null;uniqueIndex:idx_user_channel_binding" json:"channel"`
+	UserID        uint       `gorm:"not null;index:idx_channel_bindings_user_channel" json:"-"`
+	Channel       string     `gorm:"size:16;not null;index:idx_channel_bindings_user_channel" json:"channel"`
 	Target        string     `gorm:"type:text;not null" json:"-"`
 	TargetMasked  string     `gorm:"size:120;not null" json:"target_masked"`
 	Status        string     `gorm:"size:16;not null;default:active;index" json:"status"`
@@ -149,8 +166,9 @@ type Notification struct {
 
 type ReminderDTO struct {
 	Reminder
-	Channels []string `json:"channels"`
-	ListName string   `json:"list_name"`
+	Channels       []string          `json:"channels"`
+	ChannelTargets map[string][]uint `json:"channel_targets,omitempty"`
+	ListName       string            `json:"list_name"`
 }
 
 type ListDTO struct {
@@ -167,4 +185,13 @@ type ChannelStatus struct {
 	TargetMasked string `json:"target_masked,omitempty"`
 	BotLink      string `json:"bot_link,omitempty"`
 	Description  string `json:"description"`
+	// Bindings lists every bound target for channels that allow more than
+	// one (currently email). Each item exposes only the masked address.
+	Bindings []ChannelBindingItem `json:"bindings,omitempty"`
+}
+
+type ChannelBindingItem struct {
+	ID           uint   `json:"id"`
+	TargetMasked string `json:"target_masked"`
+	Status       string `json:"status"`
 }

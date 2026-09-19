@@ -24,6 +24,27 @@ func init() {
 		},
 	})
 
+	database.Upgrades = append(database.Upgrades, database.Upgrade{
+		Version: "0.3.0", Name: "allow_multiple_email_bindings",
+		// The old unique index on (user_id, channel) capped every channel at
+		// one binding; email now keeps one row per receiving address. The
+		// replacement composite index is created by AutoMigrate, so only the
+		// legacy unique index needs dropping here.
+		Upgrade: func(db *gorm.DB) error {
+			return db.Exec("DROP INDEX IF EXISTS idx_user_channel_binding").Error
+		},
+	})
+
+	database.Upgrades = append(database.Upgrades, database.Upgrade{
+		Version: "0.3.2", Name: "normalize_lunar_calendar_column",
+		// The old "yearly_lunar" rule spelling becomes rule=yearly plus
+		// calendar=lunar, matching the new picker model where the calendar
+		// is a separate choice from the repeat interval.
+		Upgrade: func(db *gorm.DB) error {
+			return db.Exec(`UPDATE reminders SET calendar = 'lunar', repeat_rule = 'yearly' WHERE repeat_rule = 'yearly_lunar'`).Error
+		},
+	})
+
 	database.RegisterModels(
 		&List{}, &Reminder{}, &ReminderChannel{}, &Completion{},
 		&ChannelBinding{}, &ProviderConfig{}, &QQBindCode{}, &DeliveryJob{}, &DeliveryAttempt{}, &Notification{},

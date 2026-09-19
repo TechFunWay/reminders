@@ -11,6 +11,8 @@ services:
     environment:
       - ENV=release
       - DATA_DIR=/app/data
+      # device-type=docker 仅用于匿名统计的平台分布；DISABLE_STATS=1 可完全关闭上报
+    command: ["-data-dir", "/app/data", "-web-dir", "./static/dist", "-device-type", "docker"]
     restart: unless-stopped
 
 volumes:

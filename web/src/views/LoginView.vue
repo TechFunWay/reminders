@@ -40,7 +40,7 @@
 
     <Teleport to="body">
       <transition enter-active-class="transition duration-200" enter-from-class="opacity-0" leave-active-class="transition duration-150" leave-to-class="opacity-0">
-        <div v-if="showFnOSConfirm" class="fixed inset-0 z-[100] flex items-center justify-center bg-black/65 px-4 backdrop-blur-sm" @click.self="closeFnOSConfirm">
+        <div v-if="showFnOSConfirm" class="fixed inset-0 z-[100] flex items-center justify-center bg-black/65 px-4 backdrop-blur-sm" @click.self="cancelFnOSConfirm">
           <section role="dialog" aria-modal="true" aria-labelledby="fnos-confirm-title" class="w-full max-w-md rounded-3xl border border-white/15 bg-[#171827] p-6 text-white shadow-2xl sm:p-8">
             <div class="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-brand-500 to-violet-500 text-2xl font-bold shadow-lg shadow-brand-500/25">
               {{ fnosConfirmUsername.slice(0, 1) || '飞' }}
@@ -52,12 +52,13 @@
               <span class="font-semibold">{{ fnosConfirmUsername || '当前飞牛 NAS 用户' }}</span>
             </div>
             <button type="button" :disabled="loading" @click="confirmFnOSLogin" class="btn-premium mt-6">
-              {{ loading ? '正在登录…' : '确认登录' }}
+              {{ loading ? '正在登录…' : '确认授权登录' }}
             </button>
-            <button type="button" :disabled="loading" @click="switchFnOSAccount" class="mt-3 w-full rounded-xl px-4 py-3 text-sm font-semibold text-brand-200 transition-colors hover:bg-white/[0.06] hover:text-brand-100 disabled:opacity-60">
+            <button v-if="!fnosMobile" type="button" :disabled="loading" @click="switchFnOSAccount" class="mt-3 w-full rounded-xl px-4 py-3 text-sm font-semibold text-brand-200 transition-colors hover:bg-white/[0.06] hover:text-brand-100 disabled:opacity-60">
               使用其他飞牛账号
             </button>
-            <button type="button" :disabled="loading" @click="closeFnOSConfirm" class="mt-1 w-full rounded-xl px-4 py-2 text-sm text-white/55 transition-colors hover:text-white/80 disabled:opacity-60">取消</button>
+            <p v-else class="mt-3 text-xs leading-5 text-white/45">如需更换飞牛账号，请在飞牛 App 中切换后重新打开本应用。</p>
+            <button type="button" :disabled="loading" @click="cancelFnOSConfirm" class="mt-1 w-full rounded-xl px-4 py-2 text-sm text-white/55 transition-colors hover:text-white/80 disabled:opacity-60">取消</button>
           </section>
         </div>
       </transition>
@@ -71,15 +72,16 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import { bindFnOSAccount, getFnOSIdentity, login, fnosLogin } from '../api/auth'
+import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { bindFnOSAccount, login, fnosLogin } from '../api/auth'
 import { useAuthStore } from '../stores/auth'
+import { resolveFnOSGatewayEntry, startFnOSAccountSwitch, startFnOSAuthorize, startFnOSFullPageAuthorize, tryIssueFnOSTicket, fnOSMobileClient } from '../utils/fnos-auth'
+import { SK } from '../utils/storage-keys'
 import AuthShell from '../components/auth/AuthShell.vue'
 import AuthField from '../components/auth/AuthField.vue'
 
 const router = useRouter()
-const route = useRoute()
 const authStore = useAuthStore()
 
 const username = ref('')
@@ -88,9 +90,26 @@ const loading = ref(false)
 const errorMsg = ref('')
 const fnosBindingRequired = ref(false)
 const fnosUsername = ref('')
+// 页内确认框：弹窗不可用（飞牛手机 App 网页视图）时就地签票后的确认入口。
 const fnosConfirmUsername = ref('')
 const showFnOSConfirm = ref(false)
-const fnosEnabled = import.meta.env.VITE_FNOS_APP === 'true'
+// 手机端不提供「切换飞牛账号」（见 fnOSMobileClient 注释），改为提示在飞牛 App 内切换。
+const fnosMobile = fnOSMobileClient()
+// 按钮显隐以服务端运行形态为准（authStore.fnosApp，随启动引导取回）：
+// 非「-fnos-app」部署（裸二进制 / Docker）一律藏掉，编译期标志只是引导
+// 返回前的兜底默认。
+const fnosEnabled = computed(() => authStore.fnosApp)
+// 后端真实服务端口与实际登记的网关入口都随启动引导（/api/bootstrap）一起
+// 取回，存在 store 里：登录页不必再为这两个值单独发一次版本查询，弱网下
+// 用户点「使用飞牛 NAS 登录」时已经握有入口，没有等待也没有竞态。
+const servicePort = computed(() => authStore.servicePort)
+const gatewayEntry = computed(() => authStore.fnosGatewayEntry)
+
+function clearFnOSTicket() {
+  sessionStorage.removeItem(SK.fnosTicket)
+  sessionStorage.removeItem(SK.fnosTicketUsername)
+}
+
 
 async function handleLogin() {
   loading.value = true
@@ -100,6 +119,7 @@ async function handleLogin() {
       ? await bindFnOSAccount('bind', username.value, password.value)
       : await login(username.value, password.value)
     if (res.data?.code === 0) {
+      if (fnosBindingRequired.value) clearFnOSTicket()
       authStore.setToken(res.data.data.token)
       authStore.setUser(res.data.data.user)
       router.push('/admin')
@@ -113,53 +133,116 @@ async function handleLogin() {
   }
 }
 
+// 飞牛授权：优先弹窗打开网关授权页（fnos-entry.html），账号展示、换账号、确认
+// 全部在弹窗里完成，本页不跳转不刷新；弹窗确认后 postMessage 交回一次性票据，
+// 本页拿到直接登录。弹窗不可用（被拦截 / 飞牛手机 App 网页视图假句柄）时由
+// startFnOSAuthorize 回调兜底：网关域就地签票弹页内确认框，直连端口整页跳授权页。
 async function handleFnOSLogin() {
+  if (loading.value) return
   loading.value = true
   errorMsg.value = ''
-  try {
-    const res = await getFnOSIdentity()
-    if (res.data?.code !== 0) {
-      errorMsg.value = res.data?.message || '无法获取飞牛 NAS 账号'
-      return
-    }
-    fnosConfirmUsername.value = res.data.data?.fnos_username || ''
-    showFnOSConfirm.value = true
-  } catch (err: any) {
-    errorMsg.value = err.response?.data?.message || '无法获取飞牛 NAS 账号'
-  } finally {
+  const gatewayURL = await resolveFnOSGatewayEntry({ servicePort: servicePort.value, entry: gatewayEntry.value })
+  loading.value = false
+  if (!gatewayURL) {
+    errorMsg.value = '请先从飞牛桌面打开本应用，再使用飞牛授权登录'
+    return
+  }
+  startFnOSAuthorize(gatewayURL, {
+    onTicket: (ticket, username) => {
+      storeFnOSTicket(ticket, username)
+      confirmFnOSLogin()
+    },
+    onUnavailable: () => fallbackFnOSAuthorize(gatewayURL),
+  })
+}
+
+function storeFnOSTicket(ticket: string, username: string) {
+  sessionStorage.setItem(SK.fnosTicket, ticket)
+  if (username) sessionStorage.setItem(SK.fnosTicketUsername, username)
+  else sessionStorage.removeItem(SK.fnosTicketUsername)
+  sessionStorage.removeItem(SK.fnosEntryError)
+}
+
+// 弹窗不可用时的兜底：网关域（飞牛桌面入口 / 手机 App 的页面本来就在网关域）
+// 就地签票，拿到票据弹页内确认框——手机端网页视图里每多一次整页跳转就多一处
+// 断裂点；只有直连端口（局域网直连、旧书签）就地签票必然 401，才整页跳授权页。
+async function fallbackFnOSAuthorize(gatewayURL: string) {
+  loading.value = true
+  const issued = await tryIssueFnOSTicket()
+  if (issued) {
     loading.value = false
+    storeFnOSTicket(issued.ticket, issued.username)
+    fnosConfirmUsername.value = issued.username
+    showFnOSConfirm.value = true
+    return
+  }
+  // 网关域也签不到票（直连端口）：整页跳授权页。跳转前探测可达性——入口可能来自
+  // 另一个网络，打不开时就地提示，不把用户送到浏览器的「无法访问页面」。
+  const opened = await startFnOSFullPageAuthorize(gatewayURL)
+  loading.value = false
+  if (!opened) {
+    errorMsg.value = '当前网络无法打开飞牛授权页，请检查网络后重试，或改用用户名密码登录'
   }
 }
 
-function closeFnOSConfirm() {
-  if (!loading.value) {
+function cancelFnOSConfirm() {
+  showFnOSConfirm.value = false
+  clearFnOSTicket()
+}
+
+// 页内确认框里的「使用其他飞牛账号」：弹窗打开飞牛登录页换号，登录成功后飞牛
+// 登录页回跳到【同源】授权页取新票据，再 postMessage 回本页完成登录——应用页
+// 全程不跳转。跳转前先探测登录页可达性：飞牛 App 沙箱源下 /login 不可达，就地
+// 提示用户改在飞牛 App 内切换账号，不把页面送到浏览器的「无法访问页面」。
+async function switchFnOSAccount() {
+  if (loading.value) return
+  let gatewayURL = localStorage.getItem(SK.fnosGatewayUrl) || gatewayEntry.value
+  if (!gatewayURL || !gatewayURL.includes('/app/')) {
+    gatewayURL = (await resolveFnOSGatewayEntry({ servicePort: servicePort.value, entry: gatewayEntry.value })) || ''
+  }
+  if (!gatewayURL || !gatewayURL.includes('/app/')) {
     showFnOSConfirm.value = false
+    clearFnOSTicket()
+    errorMsg.value = '无法定位飞牛桌面入口，请从飞牛桌面重新打开本应用'
+    return
+  }
+  clearFnOSTicket()
+  showFnOSConfirm.value = false
+  errorMsg.value = ''
+  loading.value = true
+  const started = await startFnOSAccountSwitch(gatewayURL, servicePort.value, {
+    onTicket: (ticket, username) => {
+      storeFnOSTicket(ticket, username)
+      confirmFnOSLogin()
+    },
+  })
+  loading.value = false
+  if (!started) {
+    errorMsg.value = '当前环境无法打开飞牛登录页，请在飞牛 App 中切换飞牛账号后重新打开本应用'
   }
 }
 
-function switchFnOSAccount() {
-  const appLoginPath = `${import.meta.env.BASE_URL}login?fnos_account_switched=1`
-  window.location.assign(`/login?redirect_uri=${encodeURIComponent(appLoginPath)}`)
-}
-
+// 弹窗（或整页授权页、页内确认框）里确认使用该账号后走到这里：拿到票据直接
+// 登录。票据一次性且两分钟内有效，过期或失败时清掉并提示重新点击飞牛登录。
 async function confirmFnOSLogin() {
   loading.value = true
   errorMsg.value = ''
+  showFnOSConfirm.value = false
   try {
     const res = await fnosLogin()
     if (res.data?.code !== 0) {
-      showFnOSConfirm.value = false
+      clearFnOSTicket()
       errorMsg.value = res.data?.message || '飞牛一键登录失败'
       return
     }
     if (res.data.data?.binding_required) {
-      showFnOSConfirm.value = false
       if (res.data.data.has_accounts || res.data.data.suggested_mode === 'bind') {
         fnosBindingRequired.value = true
         fnosUsername.value = res.data.data.fnos_username || ''
         username.value = res.data.data.suggested_username || ''
         return
       }
+      // 没有任何应用账号：转注册页创建并绑定，票据保留给绑定请求使用。
       router.push({
         name: 'Register',
         query: {
@@ -170,12 +253,12 @@ async function confirmFnOSLogin() {
       })
       return
     }
+    clearFnOSTicket()
     authStore.setToken(res.data.data.token)
     authStore.setUser(res.data.data.user)
-    showFnOSConfirm.value = false
     router.push('/admin')
   } catch (err: any) {
-    showFnOSConfirm.value = false
+    clearFnOSTicket()
     errorMsg.value = err.response?.data?.message || '飞牛一键登录失败'
   } finally {
     loading.value = false
@@ -183,9 +266,23 @@ async function confirmFnOSLogin() {
 }
 
 onMounted(async () => {
-  if (fnosEnabled && route.query.fnos_account_switched === '1') {
-    await router.replace({ name: 'Login' })
-    await handleFnOSLogin()
+  // 整页授权流程带回的票据由 main.ts 从 hash 接到 sessionStorage，这里直接读；
+  // 服务端口与网关入口已随启动引导取回并缓存在 store / localStorage。
+  if (!fnosEnabled.value) return
+  // 每次都重新解析一次入口：应用就跑在网关域时它立即返回当前源地址并写入
+  // localStorage，把服务端登记里可能残留的、来自另一个网络的旧入口（例如只在
+  // 内网打开过记下的 10.x 地址）就地纠正掉。
+  await resolveFnOSGatewayEntry({ servicePort: servicePort.value, entry: gatewayEntry.value })
+  // 授权页失败回退：就地显示授权页带回的错误，指引从桌面入口重试。
+  const entryError = sessionStorage.getItem(SK.fnosEntryError)
+  if (entryError) {
+    sessionStorage.removeItem(SK.fnosEntryError)
+    if (!authStore.isAuthenticated) errorMsg.value = entryError
+    return
+  }
+  // 整页授权流程带回票据的入口：确认动作已在授权页完成，拿到票据直接登录。
+  if (sessionStorage.getItem(SK.fnosTicket) && !authStore.isAuthenticated) {
+    confirmFnOSLogin()
   }
 })
 </script>

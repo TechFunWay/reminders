@@ -1,3 +1,6 @@
+import { onFnOSGatewayOrigin } from '../utils/gateway'
+import { clientID } from '../utils/client-id'
+
 export interface RealtimeNotification {
   id: number
   reminder_id?: number
@@ -9,8 +12,16 @@ export interface RealtimeNotification {
 }
 
 export interface ReminderRealtimeEvent {
-  type: 'connected' | 'notification.created' | string
+  /** notification.created（站内通知）/ reminders.changed（数据变更）/ connected */
+  type: 'connected' | 'notification.created' | 'reminders.changed' | string
   notification?: RealtimeNotification
+  /** reminders.changed：哪类数据变了（reminder / list / notification / channel）。 */
+  scope?: string
+  /** reminders.changed：发生了什么（created / updated / deleted / completed…）。 */
+  action?: string
+  target_id?: number
+  /** 该用户的变更修订号，单调递增。 */
+  revision?: number
   sent_at: string
 }
 
@@ -28,11 +39,16 @@ export function connectReminderEvents(
     while (!stopped) {
       controller = new AbortController()
       try {
-        const response = await fetch(new URL('api/reminder/events', document.baseURI), {
-          headers: {
-            Accept: 'text/event-stream',
-            Authorization: `Bearer ${token}`,
-          },
+        // 网关域不带应用自己的 Authorization（见 utils/gateway.ts）：那条路上
+        // 的登录态由服务端用网关注入的 X-Trim-* 身份解析。
+        const headers: Record<string, string> = { Accept: 'text/event-stream' }
+        if (token && !onFnOSGatewayOrigin()) headers.Authorization = `Bearer ${token}`
+        // client_id 让服务端广播数据变更时跳过本标签页（它已经在本地改过了）。
+        const url = new URL('api/reminder/events', document.baseURI)
+        const id = clientID()
+        if (id) url.searchParams.set('client_id', id)
+        const response = await fetch(url, {
+          headers,
           cache: 'no-store',
           signal: controller.signal,
         })

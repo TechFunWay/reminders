@@ -187,6 +187,19 @@ func handleBindChannel(db *gorm.DB) gin.HandlerFunc {
 			response.ErrorBadRequest(c, err.Error())
 			return
 		}
+		// Email allows several receiving mailboxes per user; every other
+		// channel keeps the single-binding replace semantics below.
+		if channel == ChannelEmail {
+			duplicate, err := emailTargetExists(db, currentUserID(c), target)
+			if err != nil {
+				response.ErrorInternal(c, "读取已有绑定失败")
+				return
+			}
+			if duplicate {
+				response.ErrorBadRequest(c, "该邮箱已绑定过")
+				return
+			}
+		}
 		encrypted, err := encryptTarget(db, target)
 		if err != nil {
 			response.ErrorInternal(c, "加密绑定信息失败")
@@ -197,16 +210,63 @@ func handleBindChannel(db *gorm.DB) gin.HandlerFunc {
 			UserID: currentUserID(c), Channel: channel, Target: encrypted,
 			TargetMasked: maskTarget(channel, target), Status: "active", VerifiedAt: &now,
 		}
-		err = db.Where("user_id = ? AND channel = ?", binding.UserID, channel).
-			Assign(map[string]interface{}{
-				"target": encrypted, "target_masked": binding.TargetMasked,
-				"status": "active", "verified_at": &now, "last_error_code": "",
-			}).FirstOrCreate(&binding).Error
-		if err != nil {
+		var saveErr error
+		if channel == ChannelEmail {
+			saveErr = db.Create(&binding).Error
+		} else {
+			saveErr = db.Where("user_id = ? AND channel = ?", binding.UserID, channel).
+				Assign(map[string]interface{}{
+					"target": encrypted, "target_masked": binding.TargetMasked,
+					"status": "active", "verified_at": &now, "last_error_code": "",
+				}).FirstOrCreate(&binding).Error
+		}
+		if saveErr != nil {
 			response.ErrorInternal(c, "保存绑定失败")
 			return
 		}
+		publishDataChanged(binding.UserID, "channel", "bound", binding.ID, originClientID(c))
 		response.Success(c, binding)
+	}
+}
+
+// emailTargetExists compares the plaintext of existing email bindings, since
+// the encrypted target is randomised and cannot be de-duplicated in SQL.
+func emailTargetExists(db *gorm.DB, userID uint, target string) (bool, error) {
+	var bindings []ChannelBinding
+	if err := db.Where("user_id = ? AND channel = ?", userID, ChannelEmail).Find(&bindings).Error; err != nil {
+		return false, err
+	}
+	for _, binding := range bindings {
+		plain, err := decryptTarget(db, binding.Target)
+		if err != nil {
+			continue
+		}
+		if strings.EqualFold(plain, target) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func handleDeleteChannelBinding(db *gorm.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		channel := strings.ToLower(c.Param("channel"))
+		id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+		if err != nil || channel == ChannelInApp || !supportedChannels[channel] {
+			response.ErrorBadRequest(c, "绑定记录无效")
+			return
+		}
+		result := db.Where("id = ? AND user_id = ? AND channel = ?", id, currentUserID(c), channel).Delete(&ChannelBinding{})
+		if result.Error != nil {
+			response.ErrorInternal(c, "删除绑定失败")
+			return
+		}
+		if result.RowsAffected == 0 {
+			response.ErrorBadRequest(c, "绑定记录不存在")
+			return
+		}
+		publishDataChanged(currentUserID(c), "channel", "binding-deleted", uint(id), originClientID(c))
+		response.Success(c, gin.H{"deleted": true})
 	}
 }
 
@@ -233,6 +293,7 @@ func handleToggleChannel(db *gorm.DB) gin.HandlerFunc {
 			response.ErrorBadRequest(c, "请先绑定该渠道")
 			return
 		}
+		publishDataChanged(currentUserID(c), "channel", "toggled", 0, originClientID(c))
 		response.Success(c, gin.H{"status": status})
 	}
 }
@@ -244,6 +305,7 @@ func handleUnbindChannel(db *gorm.DB) gin.HandlerFunc {
 			response.ErrorInternal(c, "解绑失败")
 			return
 		}
+		publishDataChanged(currentUserID(c), "channel", "unbound", 0, originClientID(c))
 		response.Success(c, gin.H{"deleted": true})
 	}
 }
@@ -257,7 +319,7 @@ func handleTestChannel(db *gorm.DB) gin.HandlerFunc {
 		}
 		userID := currentUserID(c)
 		item := Reminder{ID: 0, UserID: userID, Title: "这是一条测试提醒", Notes: "渠道已经连接成功。"}
-		result, err := sendChannel(c.Request.Context(), db, channel, userID, item, "test-"+strconv.FormatInt(time.Now().UnixNano(), 10))
+		result, err := sendChannel(c.Request.Context(), db, channel, userID, item, "test-"+strconv.FormatInt(time.Now().UnixNano(), 10), nil)
 		if err != nil {
 			response.ErrorBadRequest(c, err.Error())
 			return
@@ -294,13 +356,13 @@ func handleCreateQQBindCode(db *gorm.DB) gin.HandlerFunc {
 func channelStatuses(db *gorm.DB, userID uint) []ChannelStatus {
 	var bindings []ChannelBinding
 	_ = db.Where("user_id = ?", userID).Find(&bindings).Error
-	byChannel := map[string]ChannelBinding{}
+	byChannel := map[string][]ChannelBinding{}
 	for _, binding := range bindings {
-		byChannel[binding.Channel] = binding
+		byChannel[binding.Channel] = append(byChannel[binding.Channel], binding)
 	}
 	defs := []ChannelStatus{
 		{Channel: ChannelInApp, Label: "站内消息", Configured: true, Bound: true, Status: "active", Description: "在通知中心准时提醒"},
-		{Channel: ChannelEmail, Label: "电子邮件", Configured: emailConfigured(db), Description: "适合重要事项和较长内容"},
+		{Channel: ChannelEmail, Label: "电子邮件", Configured: emailConfigured(db), Description: "适合重要事项和较长内容，可绑定多个接收邮箱"},
 		{Channel: ChannelSMS, Label: "手机短信", Configured: smsConfigured(db), Description: "无需打开应用即可收到"},
 		{Channel: ChannelFeishu, Label: "飞书机器人", Configured: feishuConfigured(db), Description: "由企业自建应用机器人单聊提醒"},
 		{Channel: ChannelQQ, Label: "QQ 机器人", Configured: qqConfigured(db), Description: "通过 QQ 机器人主动单聊提醒"},
@@ -314,12 +376,29 @@ func channelStatuses(db *gorm.DB, userID uint) []ChannelStatus {
 				defs[i].BotLink = settings["bot_link"]
 			}
 		}
-		if binding, ok := byChannel[defs[i].Channel]; ok {
-			defs[i].Bound = true
-			defs[i].Status = binding.Status
-			defs[i].TargetMasked = binding.TargetMasked
-		} else if defs[i].Channel != ChannelInApp {
-			defs[i].Status = "unbound"
+		list := byChannel[defs[i].Channel]
+		if len(list) == 0 {
+			if defs[i].Channel != ChannelInApp {
+				defs[i].Status = "unbound"
+			}
+			continue
+		}
+		defs[i].Bound = true
+		defs[i].Status, defs[i].TargetMasked = list[0].Status, list[0].TargetMasked
+		for _, binding := range list {
+			if binding.Status == "active" {
+				defs[i].Status, defs[i].TargetMasked = binding.Status, binding.TargetMasked
+				break
+			}
+		}
+		// Only email surfaces each target individually so the UI can add or
+		// remove addresses one by one.
+		if defs[i].Channel == ChannelEmail {
+			for _, binding := range list {
+				defs[i].Bindings = append(defs[i].Bindings, ChannelBindingItem{
+					ID: binding.ID, TargetMasked: binding.TargetMasked, Status: binding.Status,
+				})
+			}
 		}
 	}
 	return defs
@@ -466,7 +545,10 @@ func stringValue(value []byte, err error) (string, error) {
 	return string(value), nil
 }
 
-func sendChannel(ctx context.Context, db *gorm.DB, channel string, userID uint, item Reminder, idempotencyKey string) (sendResult, error) {
+// sendChannel delivers one reminder occurrence on one channel. targetIDs
+// narrows multi-target channels (email) to specific bindings; nil or empty
+// delivers to every active binding.
+func sendChannel(ctx context.Context, db *gorm.DB, channel string, userID uint, item Reminder, idempotencyKey string, targetIDs []uint) (sendResult, error) {
 	if channel == ChannelInApp {
 		n := Notification{UserID: userID, Type: "reminder_due", Title: item.Title, Body: notificationBody(item)}
 		if item.ID > 0 {
@@ -478,17 +560,30 @@ func sendChannel(ctx context.Context, db *gorm.DB, channel string, userID uint, 
 		publishNotification(n)
 		return sendResult{ExternalID: strconv.FormatUint(uint64(n.ID), 10)}, nil
 	}
-	var binding ChannelBinding
-	if err := db.Where("user_id = ? AND channel = ? AND status = ?", userID, channel, "active").First(&binding).Error; err != nil {
-		return sendResult{}, &deliveryError{Code: "CHANNEL_NOT_BOUND", Message: "该通知渠道尚未绑定或已停用", Permanent: true}
-	}
-	target, err := decryptTarget(db, binding.Target)
-	if err != nil {
-		return sendResult{}, &deliveryError{Code: "TARGET_DECRYPT_FAILED", Message: "读取渠道绑定信息失败", Permanent: true}
+	// Email resolves its (possibly multiple) recipients inside the switch;
+	// every other channel still delivers to exactly one bound target.
+	var target string
+	if channel != ChannelEmail {
+		var binding ChannelBinding
+		if err := db.Where("user_id = ? AND channel = ? AND status = ?", userID, channel, "active").First(&binding).Error; err != nil {
+			return sendResult{}, &deliveryError{Code: "CHANNEL_NOT_BOUND", Message: "该通知渠道尚未绑定或已停用", Permanent: true}
+		}
+		decrypted, err := decryptTarget(db, binding.Target)
+		if err != nil {
+			return sendResult{}, &deliveryError{Code: "TARGET_DECRYPT_FAILED", Message: "读取渠道绑定信息失败", Permanent: true}
+		}
+		target = decrypted
 	}
 	switch channel {
 	case ChannelEmail:
-		return sendEmail(db, target, item)
+		recipients, err := activeEmailRecipients(db, userID, targetIDs)
+		if err != nil {
+			return sendResult{}, &deliveryError{Code: "TARGET_DECRYPT_FAILED", Message: "读取渠道绑定信息失败", Permanent: true}
+		}
+		if len(recipients) == 0 {
+			return sendResult{}, &deliveryError{Code: "CHANNEL_NOT_BOUND", Message: "该通知渠道尚未绑定或已停用", Permanent: true}
+		}
+		return sendEmail(db, recipients, item)
 	case ChannelSMS:
 		return sendSMSWebhook(ctx, db, target, item, idempotencyKey)
 	case ChannelFeishu:
@@ -526,7 +621,45 @@ func qqConfigured(db *gorm.DB) bool {
 	return err == nil && values["app_id"] != "" && values["app_secret"] != ""
 }
 
-func sendEmail(db *gorm.DB, target string, item Reminder) (sendResult, error) {
+// activeEmailRecipients decrypts the active email bindings this send should
+// reach. When a per-reminder selection no longer matches any binding (the
+// mailbox was unbound or disabled meanwhile), the reminder falls back to all
+// active bindings instead of silently failing. The addresses receive the
+// message in one SMTP transaction, matching the delivery model of one
+// delivery job per reminder and channel.
+func activeEmailRecipients(db *gorm.DB, userID uint, targetIDs []uint) ([]string, error) {
+	bindings, err := activeEmailBindings(db, userID, targetIDs)
+	if err != nil {
+		return nil, err
+	}
+	if len(bindings) == 0 && len(targetIDs) > 0 {
+		bindings, err = activeEmailBindings(db, userID, nil)
+		if err != nil {
+			return nil, err
+		}
+	}
+	recipients := make([]string, 0, len(bindings))
+	for _, binding := range bindings {
+		target, err := decryptTarget(db, binding.Target)
+		if err != nil {
+			return nil, err
+		}
+		recipients = append(recipients, target)
+	}
+	return recipients, nil
+}
+
+func activeEmailBindings(db *gorm.DB, userID uint, targetIDs []uint) ([]ChannelBinding, error) {
+	var bindings []ChannelBinding
+	q := db.Where("user_id = ? AND channel = ? AND status = ?", userID, ChannelEmail, "active")
+	if len(targetIDs) > 0 {
+		q = q.Where("id IN ?", targetIDs)
+	}
+	err := q.Find(&bindings).Error
+	return bindings, err
+}
+
+func sendEmail(db *gorm.DB, recipients []string, item Reminder) (sendResult, error) {
 	values, err := providerSettings(db, ChannelEmail)
 	if err != nil || values["host"] == "" || values["from_address"] == "" {
 		return sendResult{}, &deliveryError{Code: "PROVIDER_CONFIG_INVALID", Message: "邮件服务尚未配置", Permanent: true}
@@ -547,14 +680,14 @@ func sendEmail(db *gorm.DB, target string, item Reminder) (sendResult, error) {
 		body += "\r\n\r\n" + item.Notes
 	}
 	message := []byte("From: " + name + " <" + from + ">\r\n" +
-		"To: " + target + "\r\n" +
+		"To: " + strings.Join(recipients, ", ") + "\r\n" +
 		"Subject: =?UTF-8?B?" + base64.StdEncoding.EncodeToString([]byte(subject)) + "?=\r\n" +
 		"MIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n" + body)
 	var auth smtp.Auth
 	if user := values["username"]; user != "" {
 		auth = smtp.PlainAuth("", user, values["password"], host)
 	}
-	if err := sendSMTP(host, port, auth, from, []string{target}, message); err != nil {
+	if err := sendSMTP(host, port, auth, from, recipients, message); err != nil {
 		return sendResult{}, &deliveryError{Code: "SMTP_SEND_FAILED", Message: smtpErrorMessage(host, err)}
 	}
 	return sendResult{}, nil

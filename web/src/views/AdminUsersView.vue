@@ -2,7 +2,7 @@
   <div class="page-container animate-fade-in">
     <!-- Stat cards -->
     <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
-      <div class="surface rounded-2xl p-5">
+      <div class="surface rounded-2xl p-4 sm:p-5">
         <div class="flex items-center justify-between">
           <div>
             <div class="text-sm text-muted-foreground">用户总数</div>
@@ -13,10 +13,10 @@
           </div>
         </div>
       </div>
-      <div class="surface rounded-2xl p-5">
+      <div class="surface rounded-2xl p-4 sm:p-5">
         <div class="flex items-center justify-between">
           <div>
-            <div class="text-sm text-muted-foreground">管理员</div>
+            <div class="text-sm text-muted-foreground">本页管理员</div>
             <div class="text-2xl font-extrabold text-foreground mt-1">{{ adminCount }}</div>
           </div>
           <div class="w-11 h-11 rounded-xl bg-violet-50 dark:bg-violet-500/15 text-violet-600 dark:text-violet-300 flex items-center justify-center">
@@ -24,10 +24,10 @@
           </div>
         </div>
       </div>
-      <div class="surface rounded-2xl p-5">
+      <div class="surface rounded-2xl p-4 sm:p-5">
         <div class="flex items-center justify-between">
           <div>
-            <div class="text-sm text-muted-foreground">已启用</div>
+            <div class="text-sm text-muted-foreground">本页已启用</div>
             <div class="text-2xl font-extrabold text-foreground mt-1">{{ activeCount }}</div>
           </div>
           <div class="w-11 h-11 rounded-xl bg-emerald-50 dark:bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 flex items-center justify-center">
@@ -35,11 +35,11 @@
           </div>
         </div>
       </div>
-      <div class="surface rounded-2xl p-5">
+      <div class="surface rounded-2xl p-4 sm:p-5">
         <div class="flex items-center justify-between">
           <div>
-            <div class="text-sm text-muted-foreground">已禁用</div>
-            <div class="text-2xl font-extrabold text-foreground mt-1">{{ Math.max(total - activeCount, 0) }}</div>
+            <div class="text-sm text-muted-foreground">本页已禁用</div>
+            <div class="text-2xl font-extrabold text-foreground mt-1">{{ disabledCount }}</div>
           </div>
           <div class="w-11 h-11 rounded-xl bg-rose-50 dark:bg-rose-500/15 text-rose-600 dark:text-rose-300 flex items-center justify-center">
             <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"/></svg>
@@ -125,7 +125,16 @@
                 </div>
               </td>
             </tr>
-            <tr v-if="users.length === 0">
+            <tr v-if="errorMsg">
+              <td colspan="5" class="py-16 text-center">
+                <div class="flex flex-col items-center gap-3 text-rose-500">
+                  <svg class="w-12 h-12 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v4m0 4h.01M10.3 3.8 2.5 17.2A2 2 0 0 0 4.2 20h15.6a2 2 0 0 0 1.7-2.8L13.7 3.8a2 2 0 0 0-3.4 0Z"/></svg>
+                  <span class="text-sm">{{ errorMsg }}</span>
+                  <button class="rounded-xl border border-border bg-surface px-4 py-2 text-xs font-bold text-foreground transition hover:bg-muted" @click="loadUsers()">重试</button>
+                </div>
+              </td>
+            </tr>
+            <tr v-else-if="users.length === 0">
               <td colspan="5" class="py-16 text-center">
                 <div class="flex flex-col items-center gap-3 text-muted-foreground">
                   <svg class="w-12 h-12 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M17 20h5v-2a4 4 0 00-3-3.87M9 20H4v-2a4 4 0 013-3.87m6-3.13a4 4 0 10-4-4 4 4 0 004 4z"/></svg>
@@ -175,6 +184,19 @@
         </div>
       </div>
     </transition>
+
+    <ConfirmDialog
+      v-model="deleteVisible"
+      danger
+      title="删除用户？"
+      :message="`确定删除用户「${deleteTarget?.username || ''}」？该账号将无法再登录本应用。`"
+      confirm-text="删除"
+      loading-text="删除中…"
+      :loading="deleteLoading"
+      @confirm="confirmDelete"
+    >
+      <p v-if="deleteError" class="mt-2 rounded-lg bg-rose-500/10 px-3 py-2 text-xs text-rose-500">{{ deleteError }}</p>
+    </ConfirmDialog>
   </div>
 </template>
 
@@ -182,16 +204,21 @@
 import { ref, computed, onMounted } from 'vue'
 import { getUsers, toggleUserStatus, deleteUser, resetUserPassword } from '../api/user'
 import { passwordValidationError } from '../utils/password'
+import ConfirmDialog from '../components/ConfirmDialog.vue'
 
 const users = ref<any[]>([])
 const search = ref('')
 const page = ref(1)
 const pageSize = ref(10)
 const total = ref(0)
+const errorMsg = ref('')
 const totalPages = computed(() => Math.ceil(total.value / pageSize.value) || 1)
 
+// 统计卡片只统计当前页（接口按页返回），文案与「用户总数」的全局口径区分开，
+// 避免用户数超过一页时三张卡片互相矛盾。
 const adminCount = computed(() => users.value.filter((u) => u.role === 'admin').length)
 const activeCount = computed(() => users.value.filter((u) => u.status === 1).length)
+const disabledCount = computed(() => users.value.filter((u) => u.status !== 1).length)
 
 const resetModalVisible = ref(false)
 const resetTarget = ref<any>(null)
@@ -216,13 +243,24 @@ function avatarClass(name: string) {
 onMounted(loadUsers)
 
 async function loadUsers() {
+  errorMsg.value = ''
   try {
     const res = await getUsers(page.value, pageSize.value, search.value || undefined)
     if (res.data?.code === 0) {
       users.value = res.data.data?.list || res.data.data?.items || []
       total.value = res.data.data?.total || 0
+    } else {
+      users.value = []
+      total.value = 0
+      errorMsg.value = res.data?.message || '读取用户列表失败'
     }
-  } catch {}
+  } catch (err: any) {
+    // 失败必须说出来：以前这里静默吞错，把「接口失败」渲染成「暂无用户数据」，
+    // 用户无法区分真的空库和坏掉。
+    users.value = []
+    total.value = 0
+    errorMsg.value = err.response?.data?.message || '读取用户列表失败，请重试'
+  }
 }
 
 function reload() {
@@ -251,12 +289,36 @@ async function handleToggleStatus(user: any) {
   } catch {}
 }
 
-async function handleDelete(user: any) {
-  if (!confirm(`确定删除用户 ${user.username}？`)) return
+// 删除确认走应用内浮层（见 ConfirmDialog）。失败必须留在浮层里说出来：
+// 静默关窗会让用户以为已经删掉，而他刷新后仍会看到该账号。
+const deleteVisible = ref(false)
+const deleteTarget = ref<any>(null)
+const deleteLoading = ref(false)
+const deleteError = ref('')
+
+function handleDelete(user: any) {
+  deleteTarget.value = user
+  deleteError.value = ''
+  deleteVisible.value = true
+}
+
+async function confirmDelete() {
+  const user = deleteTarget.value
+  if (!user) return
+  deleteLoading.value = true
+  deleteError.value = ''
   try {
     const res = await deleteUser(user.id)
-    if (res.data?.code === 0) await loadUsers()
-  } catch {}
+    if (res.data?.code === 0) {
+      deleteVisible.value = false
+      deleteTarget.value = null
+      await loadUsers()
+    } else {
+      deleteError.value = res.data?.message || '删除失败'
+    }
+  } catch (err: any) {
+    deleteError.value = err.response?.data?.message || '删除失败，请重试'
+  } finally { deleteLoading.value = false }
 }
 
 function handleResetPassword(user: any) {

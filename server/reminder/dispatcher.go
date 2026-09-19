@@ -2,6 +2,8 @@ package reminder
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sync"
@@ -10,6 +12,7 @@ import (
 	"smallgo/server/logger"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var dispatchMu sync.Mutex
@@ -61,7 +64,14 @@ func processJob(db *gorm.DB, candidate DeliveryJob) {
 		finishCancelled(db, job.ID, "REMINDER_NOT_FOUND")
 		return
 	}
-	if item.CompletedAt != nil || item.DueAt == nil || !sameInstant(*item.DueAt, job.ScheduledFor) {
+	if item.CompletedAt != nil || item.DueAt == nil {
+		finishCancelled(db, job.ID, "REMINDER_CHANGED")
+		return
+	}
+	// 过期重复提醒的链条任务按“到期时间 + k×间隔”落在 DueAt 之后，属于预期；
+	// 其余 ScheduledFor 与 DueAt 不一致的任务都是过期 occurrence 的陈旧任务。
+	if !sameInstant(*item.DueAt, job.ScheduledFor) &&
+		!(item.RepeatNotifyMinutes > 0 && job.ScheduledFor.After(*item.DueAt)) {
 		finishCancelled(db, job.ID, "REMINDER_CHANGED")
 		return
 	}
@@ -73,7 +83,7 @@ func processJob(db *gorm.DB, candidate DeliveryJob) {
 
 	started := time.Now().UTC()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	sendResult, err := sendChannel(ctx, db, job.Channel, job.UserID, item, job.IdempotencyKey)
+	sendResult, err := sendChannel(ctx, db, job.Channel, job.UserID, item, job.IdempotencyKey, parseChannelTargets(link.Targets))
 	cancel()
 	finished := time.Now().UTC()
 	attemptNo := job.AttemptCount + 1
@@ -89,11 +99,16 @@ func processJob(db *gorm.DB, candidate DeliveryJob) {
 			if e := tx.Create(&attempt).Error; e != nil {
 				return e
 			}
-			return tx.Model(&DeliveryJob{}).Where("id = ?", job.ID).Updates(map[string]interface{}{
+			if e := tx.Model(&DeliveryJob{}).Where("id = ?", job.ID).Updates(map[string]interface{}{
 				"status": "succeeded", "attempt_count": attemptNo,
 				"external_message_id": sendResult.ExternalID, "locked_at": nil, "worker_id": "",
 				"last_error_code": "", "last_error_message": "",
-			}).Error
+			}).Error; e != nil {
+				return e
+			}
+			// The send succeeded and the user has not completed the reminder
+			// yet, so queue the next notification for repeat-notify reminders.
+			return scheduleRepeatNotify(tx, item, job)
 		})
 		if job.Channel != ChannelInApp {
 			_ = db.Model(&ChannelBinding{}).Where("user_id = ? AND channel = ?", job.UserID, job.Channel).Updates(map[string]interface{}{"last_error_code": "", "last_error_at": nil}).Error
@@ -161,6 +176,40 @@ func finishCancelled(db *gorm.DB, jobID uint, code string) {
 	_ = db.Model(&DeliveryJob{}).Where("id = ?", jobID).Updates(map[string]interface{}{
 		"status": "cancelled", "locked_at": nil, "worker_id": "", "last_error_code": code,
 	}).Error
+}
+
+// scheduleRepeatNotify queues the next notification for an uncompleted
+// repeat-notify reminder: one interval after the occurrence that just fired,
+// repeating until the user completes, edits or deletes the reminder — each of
+// those rebuilds or cancels pending jobs and thereby ends the chain. The
+// upsert keeps the chain idempotent and merges with a rebuilt job that lands
+// on the same occurrence (for example a daily rule with a one-day interval).
+func scheduleRepeatNotify(tx *gorm.DB, item Reminder, job DeliveryJob) error {
+	if item.RepeatNotifyMinutes <= 0 || item.DueAt == nil {
+		return nil
+	}
+	next := job.ScheduledFor.Add(time.Duration(item.RepeatNotifyMinutes) * time.Minute)
+	// 逾期一段时间后才开启/重建链条时，被跳过的间隔不再逐个补发（避免一次性
+	// 轰炸一串过期通知），直接从现在起排下一个完整间隔。
+	if now := time.Now().UTC(); !next.After(now) {
+		next = now.Add(time.Duration(item.RepeatNotifyMinutes) * time.Minute)
+	}
+	raw := fmt.Sprintf("%d|%s|%s|chain", item.ID, job.Channel, next.UTC().Format(time.RFC3339Nano))
+	sum := sha256.Sum256([]byte(raw))
+	nextJob := DeliveryJob{
+		UserID: item.UserID, ReminderID: item.ID, Channel: job.Channel,
+		ScheduledFor: next, RunAt: next, Status: "pending",
+		IdempotencyKey: hex.EncodeToString(sum[:]),
+	}
+	return tx.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "reminder_id"}, {Name: "channel"}, {Name: "scheduled_for"}},
+		DoUpdates: clause.Assignments(map[string]interface{}{
+			"run_at": next, "status": "pending", "attempt_count": 0,
+			"next_attempt_at": nil, "locked_at": nil, "worker_id": "",
+			"idempotency_key": nextJob.IdempotencyKey, "last_error_code": "",
+			"last_error_message": "", "external_message_id": "",
+		}),
+	}).Create(&nextJob).Error
 }
 
 func sameInstant(a, b time.Time) bool {

@@ -34,6 +34,15 @@ dist/
 *.swp
 *.swo
 *~
+.opencode/
+
+# Agent tools
+.omo/
+.playwright-mcp/
+memory/
+.claude/*
+!.claude/skills/
+.mimocode/
 
 # OS
 .DS_Store
@@ -46,3 +55,14 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Packaging artifacts
+app.tgz
+
+# ---------- 本地临时目录 ----------
+# 临时测试与调试文件统一放这里，目录内内容不入库（仅保留 .gitkeep 占位）
+tmp/*
+!tmp/.gitkeep
+
+# AI 工具本地目录
+.zcode/

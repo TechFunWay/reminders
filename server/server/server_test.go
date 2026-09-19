@@ -169,6 +169,105 @@ func TestHealthAndVersion(t *testing.T) {
 			t.Fatalf("%s: non-zero code", path)
 		}
 	}
+	// 非飞牛部署必须显式报 fnosApp=false：登录页靠它藏「使用飞牛 NAS 登录」。
+	w := doJSON(r, "GET", "/api/version", "", nil)
+	if got := decode(t, w)["data"].(map[string]interface{})["fnosApp"]; got != false {
+		t.Fatalf("plain deployment fnosApp = %v, want false", got)
+	}
+}
+
+// The SPA uses servicePort to tell "served under the fnOS gateway" apart from
+// "served on the direct TCP listener"; only the former may derive the
+// trampoline URL from the current origin.
+func TestFnOSVersionExposesServicePort(t *testing.T) {
+	r, _ := setupFnOSTestRouter(t)
+	w := doJSON(r, "GET", "/app/techfunway-reminders/api/version", "", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("fnos version status %d", w.Code)
+	}
+	data := decode(t, w)["data"].(map[string]interface{})
+	if data["servicePort"] != "0" {
+		t.Fatalf("servicePort = %v, want 0 (default test config port)", data["servicePort"])
+	}
+	if data["fnosApp"] != true {
+		t.Fatalf("fnosApp = %v, want true in fnOS mode", data["fnosApp"])
+	}
+}
+
+// The SPA renders its first frame from /api/bootstrap alone: public configs,
+// setup state, the current session and (on fnOS) the trampoline entry all come
+// back in one round trip. This pins the contract the frontend store relies on.
+func TestBootstrapReturnsStartupState(t *testing.T) {
+	r, _, _ := setupTestRouter(t)
+
+	w := doJSON(r, "GET", "/api/bootstrap", "", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("bootstrap status %d body %s", w.Code, w.Body.String())
+	}
+	data := decode(t, w)["data"].(map[string]interface{})
+	if data["setup_required"] != true {
+		t.Fatalf("fresh install must report setup_required=true, got %v", data["setup_required"])
+	}
+	configs, ok := data["configs"].(map[string]interface{})
+	if !ok || len(configs) == 0 {
+		t.Fatalf("bootstrap must include public configs, got %v", data["configs"])
+	}
+	auth := data["auth"].(map[string]interface{})
+	if auth["authenticated"] != false {
+		t.Fatalf("anonymous bootstrap must not be authenticated")
+	}
+	if data["fnos_app"] != false {
+		t.Fatalf("plain deployment must report fnos_app=false, got %v", data["fnos_app"])
+	}
+
+	token := registerUser(t, r, "admin", "secret123")
+
+	// 带令牌的引导请求必须直接给出登录态，前端因此省掉一次 check 往返。
+	w = doJSON(r, "GET", "/api/bootstrap", token, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("authenticated bootstrap status %d", w.Code)
+	}
+	data = decode(t, w)["data"].(map[string]interface{})
+	if data["setup_required"] != false {
+		t.Fatalf("setup_required must clear once an account exists")
+	}
+	auth = data["auth"].(map[string]interface{})
+	if auth["authenticated"] != true {
+		t.Fatalf("token must resolve to an authenticated session, got %v", auth)
+	}
+	user := auth["user"].(map[string]interface{})
+	if user["role"] != "admin" {
+		t.Fatalf("bootstrap user role = %v, want admin", user["role"])
+	}
+
+	// 无效令牌不能让引导请求 500/401：它是公开读，按未登录处理即可。
+	w = doJSON(r, "GET", "/api/bootstrap", "not-a-token", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("bootstrap with a bad token must still render, got %d", w.Code)
+	}
+	if decode(t, w)["data"].(map[string]interface{})["auth"].(map[string]interface{})["authenticated"] != false {
+		t.Fatalf("bad token must not authenticate")
+	}
+}
+
+// fnOS 部署下登录页需要服务端口与跳板页入口才能发起授权，二者必须随引导
+// 一起下发，否则手机端「打开就点」还会再等一次版本查询。
+func TestFnOSBootstrapCarriesGatewayEntry(t *testing.T) {
+	r, _ := setupFnOSTestRouter(t)
+	w := doJSON(r, "GET", "/app/techfunway-reminders/api/bootstrap", "", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("fnos bootstrap status %d", w.Code)
+	}
+	data := decode(t, w)["data"].(map[string]interface{})
+	if data["service_port"] != "0" {
+		t.Fatalf("service_port = %v, want the configured port", data["service_port"])
+	}
+	if data["fnos_app"] != true {
+		t.Fatalf("fnos_app = %v, want true in fnOS mode", data["fnos_app"])
+	}
+	if _, present := data["fnos_gateway_entry"]; present {
+		t.Fatalf("entry must stay absent until the trampoline registers it")
+	}
 }
 
 func TestFirstUserBecomesAdminAndLogin(t *testing.T) {
@@ -307,6 +406,89 @@ func TestFnOSBindingRequiresGatewayIdentity(t *testing.T) {
 	}
 }
 
+// 飞牛授权只是身份来源，应用自己的登录态必须能独立退出：网关域上点「退出登录」
+// 之后，网关注入的 X-Trim-* 不得再把登录态自动认回来（否则退出立即被撤销，
+// 表现就是「飞牛登录的应用退不出去」）。重新显式登录后再恢复隐式维持。
+func TestFnOSGatewayLogoutIsNotUndoneByGatewayIdentity(t *testing.T) {
+	r, db := setupFnOSTestRouter(t)
+	const base = "/app/techfunway-reminders/api"
+
+	// 建号并绑定 NAS 用户 1000。
+	if w := doFnOSJSON(r, http.MethodPost, base+"/auth/fnos/bind", "1000", "nas-admin", map[string]string{
+		"mode": "register", "username": "reminder-admin", "password": "secret123",
+	}); w.Code != http.StatusOK {
+		t.Fatalf("bind status %d body %s", w.Code, w.Body.String())
+	}
+	var account database.User
+	if err := db.Where("username = ?", "reminder-admin").First(&account).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	// 退出前：网关身份隐式认人，bootstrap 报告的是网关来源的会话。
+	w := doFnOSJSON(r, http.MethodGet, base+"/bootstrap", "1000", "nas-admin", nil)
+	if got := decode(t, w)["data"].(map[string]interface{})["session_source"]; got != "gateway" {
+		t.Fatalf("before logout session_source = %v, want gateway", got)
+	}
+
+	// 退出登录：网关域上必须落持久化抑制标记，而不是只清前端。
+	if w := doFnOSJSON(r, http.MethodPost, base+"/auth/logout", "1000", "nas-admin", nil); w.Code != http.StatusOK {
+		t.Fatalf("logout status %d body %s", w.Code, w.Body.String())
+	}
+	var session database.UserSession
+	if err := db.Where("user_id = ?", account.ID).First(&session).Error; err != nil || !session.Suppressed {
+		t.Fatalf("logout did not persist suppression: session=%#v err=%v", session, err)
+	}
+
+	// 退出后：同一个网关身份不再换来登录态。
+	w = doFnOSJSON(r, http.MethodGet, base+"/bootstrap", "1000", "nas-admin", nil)
+	if auth := decode(t, w)["data"].(map[string]interface{})["auth"].(map[string]interface{}); auth["authenticated"] == true {
+		t.Fatalf("gateway identity resurrected the session after logout: %#v", auth)
+	}
+	if w := doFnOSJSON(r, http.MethodGet, base+"/auth/me", "1000", "nas-admin", nil); w.Code != http.StatusUnauthorized {
+		t.Fatalf("authed route still reachable after logout: status %d body %s", w.Code, w.Body.String())
+	}
+
+	// 退出是幂等的：没有会话时重复调用也要成功。
+	if w := doJSON(r, http.MethodPost, base+"/auth/logout", "", nil); w.Code != http.StatusOK {
+		t.Fatalf("idempotent logout status %d body %s", w.Code, w.Body.String())
+	}
+
+	// 显式重新登录（登录页的「使用飞牛 NAS 登录」）后抑制解除，刷新不再掉线。
+	if w := doFnOSJSON(r, http.MethodPost, base+"/auth/fnos/login", "1000", "nas-admin", nil); w.Code != http.StatusOK {
+		t.Fatalf("re-login status %d body %s", w.Code, w.Body.String())
+	}
+	if err := db.Where("user_id = ?", account.ID).First(&session).Error; err != nil || session.Suppressed {
+		t.Fatalf("explicit login did not clear suppression: session=%#v err=%v", session, err)
+	}
+	w = doFnOSJSON(r, http.MethodGet, base+"/bootstrap", "1000", "nas-admin", nil)
+	if auth := decode(t, w)["data"].(map[string]interface{})["auth"].(map[string]interface{}); auth["authenticated"] != true {
+		t.Fatalf("gateway session not restored after explicit login: %#v", auth)
+	}
+}
+
+// 直连端口上的退出只结束应用自己的会话：没有网关身份，也不该写坏别的用户。
+func TestLogoutOnDirectPortIsHarmless(t *testing.T) {
+	r, db, _ := setupTestRouter(t)
+	const base = "/api"
+
+	if w := doJSON(r, http.MethodPost, base+"/auth/register", "", map[string]string{"username": "admin", "password": "secret123"}); w.Code != http.StatusOK {
+		t.Fatalf("register status %d body %s", w.Code, w.Body.String())
+	}
+	w := doJSON(r, http.MethodPost, base+"/auth/login", "", map[string]string{"username": "admin", "password": "secret123"})
+	token := decode(t, w)["data"].(map[string]interface{})["token"].(string)
+
+	if w := doJSON(r, http.MethodPost, base+"/auth/logout", token, nil); w.Code != http.StatusOK {
+		t.Fatalf("direct-port logout status %d body %s", w.Code, w.Body.String())
+	}
+	var count int64
+	if err := db.Model(&database.UserSession{}).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("expected one session row for the logged-out user, got %d", count)
+	}
+}
+
 func TestFnOSListensOnPortAndGatewaySocket(t *testing.T) {
 	socketFile, err := os.CreateTemp("/tmp", "rem-fnos-")
 	if err != nil {
@@ -343,6 +525,44 @@ func TestFnOSDirectPortRedirectsToGatewayPrefix(t *testing.T) {
 	handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
 	if w.Code != http.StatusTemporaryRedirect || w.Header().Get("Location") != "/app/techfunway-reminders/" {
 		t.Fatalf("direct fnos entry = status %d location %q", w.Code, w.Header().Get("Location"))
+	}
+}
+
+// The trampoline's protocol evolves with releases; a cached old copy speaks the
+// old protocol and deadlocks the login flow (the v0.6.2 incident).
+func TestFnOSEntryTrampolineNotCached(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "fnos-entry.html"), []byte("<html></html>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	db, err := database.InitDB(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	if err := database.AutoMigrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if err := sysconfig.InitDefaultConfigs(db); err != nil {
+		t.Fatalf("init configs: %v", err)
+	}
+	secret, err := sysconfig.GetConfig(db, "jwt_secret", 0)
+	if err != nil || secret == "" {
+		t.Fatalf("jwt secret: %v", err)
+	}
+	cfg := config.Config{CORSOrigin: "*", FnOSApp: true, GatewayPrefix: "/app/techfunway-reminders", WebDir: dir}
+	r := NewRouter(cfg, db, secret)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/app/techfunway-reminders/fnos-entry.html", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("trampoline status %d body %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("trampoline Cache-Control = %q, want no-store", got)
+	}
+	if !strings.Contains(w.Body.String(), "<html>") {
+		t.Fatalf("trampoline body unexpected: %q", w.Body.String())
 	}
 }
 
@@ -685,6 +905,8 @@ func TestUploadAndPathTraversal(t *testing.T) {
 	}
 }
 
+// TestAppRoutesUsePublicRateLimiter locks the limiter onto an app's public
+// routes: with RateLimit=1 the second call must be rejected.
 func TestAppRoutesUsePublicRateLimiter(t *testing.T) {
 	_, db, dir := setupTestRouter(t)
 	secret, err := sysconfig.GetConfig(db, "jwt_secret", 0)
@@ -701,6 +923,65 @@ func TestAppRoutesUsePublicRateLimiter(t *testing.T) {
 	}
 	if got := doJSON(r, http.MethodGet, "/api/qrcode?content=hello", "", nil).Code; got != http.StatusTooManyRequests {
 		t.Fatalf("second QR request returned %d, want 429", got)
+	}
+}
+
+// TestBootstrapReadsBypassRateLimiter protects the SPA startup reads. They are
+// called on every navigation and must never 429: a rejected setup-required call
+// leaves setupRequired=false, which sends a first-time install to the login
+// page instead of admin creation, with no visible error. With RateLimit=1 any
+// counted call would be rejected on the second attempt.
+func TestBootstrapReadsBypassRateLimiter(t *testing.T) {
+	_, db, _ := setupTestRouter(t)
+	secret, err := sysconfig.GetConfig(db, "jwt_secret", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := NewRouter(config.Config{CORSOrigin: "*", RateLimit: 1}, db, secret)
+	for i := 0; i < 5; i++ {
+		if got := doJSON(r, http.MethodGet, "/api/configs/public", "", nil).Code; got != http.StatusOK {
+			t.Fatalf("configs/public call %d returned %d, want 200", i+1, got)
+		}
+		if got := doJSON(r, http.MethodGet, "/api/auth/setup-required", "", nil).Code; got != http.StatusOK {
+			t.Fatalf("setup-required call %d returned %d, want 200", i+1, got)
+		}
+		// 首屏引导请求同样不能被限流：它是「应用是否可用」的唯一依据，被 429
+		// 后前端只能按默认值渲染，首次安装会被错误地带到登录页。
+		if got := doJSON(r, http.MethodGet, "/api/bootstrap", "", nil).Code; got != http.StatusOK {
+			t.Fatalf("bootstrap call %d returned %d, want 200", i+1, got)
+		}
+	}
+}
+
+// TestFnOSGatewayTrafficIsNotRateLimitedPerIP covers the mobile symptom where
+// every NAS user shared one bucket: gateway requests arrive over the local unix
+// socket, so ClientIP() is empty for all of them. With the limiter enabled and
+// a fresh budget spent by one caller, the next gateway request must still pass.
+func TestFnOSGatewayTrafficIsNotSharedAcrossIP(t *testing.T) {
+	_, db := setupFnOSTestRouter(t)
+	secret, err := sysconfig.GetConfig(db, "jwt_secret", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := NewRouter(config.Config{
+		CORSOrigin:    "*",
+		RateLimit:     1,
+		FnOSApp:       true,
+		GatewayPrefix: "/app/techfunway-reminders",
+	}, db, secret)
+
+	// One NAS user spends the whole allowance on a limited public endpoint
+	// (the QR app route is public and is not a bootstrap read).
+	if got := doFnOSJSON(r, http.MethodGet, "/app/techfunway-reminders/api/qrcode?content=a", "1000", "nas-a", nil).Code; got != http.StatusOK {
+		t.Fatalf("first gateway request returned %d", got)
+	}
+	if got := doFnOSJSON(r, http.MethodGet, "/app/techfunway-reminders/api/qrcode?content=a", "1000", "nas-a", nil).Code; got != http.StatusTooManyRequests {
+		t.Fatalf("second request from same NAS user returned %d, want 429", got)
+	}
+	// A different NAS user on the same box has its own bucket and must not be
+	// throttled by the first user's activity.
+	if got := doFnOSJSON(r, http.MethodGet, "/app/techfunway-reminders/api/qrcode?content=b", "2000", "nas-b", nil).Code; got != http.StatusOK {
+		t.Fatalf("another NAS user was throttled: got %d, want 200", got)
 	}
 }
 

@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>飞牛 NAS 登录 · 提醒事项</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { min-height: 100vh; margin: 0; display: grid; place-items: center; padding: 24px; color: #fff; background: #171827; font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    .card { width: min(440px,100%); padding: 36px; border: 1px solid rgba(255,255,255,.12); border-radius: 20px; background: rgba(255,255,255,.04); text-align: center; }
+    .icon { width: 52px; height: 52px; margin: 0 auto 20px; display: grid; place-items: center; border-radius: 15px; color: #fff; background: linear-gradient(135deg,#6366f1,#8b5cf6); font-size: 24px; }
+    h1 { margin: 0 0 10px; font-size: 22px; }
+    p { margin: 0; color: rgba(255,255,255,.6); font-size: 14px; line-height: 1.65; }
+    .error { color: #fda4af; }
+    .ok { color: #6ee7b7; }
+    .account { margin: 22px 0 6px; display: flex; align-items: center; justify-content: center; gap: 12px; padding: 16px; border: 1px solid rgba(255,255,255,.1); border-radius: 16px; background: rgba(255,255,255,.06); }
+    .avatar { width: 40px; height: 40px; flex: none; display: grid; place-items: center; border-radius: 999px; background: rgba(129,140,248,.25); color: #c7d2fe; font-weight: 600; }
+    .name { color: #fff; font-weight: 600; font-size: 15px; word-break: break-all; }
+    button { width: 100%; margin-top: 12px; min-height: 46px; border: 0; border-radius: 12px; font-size: 14px; font-weight: 600; cursor: pointer; transition: filter .15s, background .15s, color .15s; font-family: inherit; }
+    button:disabled { opacity: .6; cursor: not-allowed; }
+    .primary { color: #fff; background: linear-gradient(135deg,#6366f1,#8b5cf6); box-shadow: 0 8px 20px -8px rgba(99,102,241,.6); }
+    .primary:hover:not(:disabled) { filter: brightness(1.08); }
+    .ghost { color: #c7d2fe; background: transparent; border: 1px solid rgba(255,255,255,.15); }
+    .ghost:hover:not(:disabled) { background: rgba(255,255,255,.06); }
+    .plain { color: rgba(255,255,255,.55); background: transparent; min-height: 36px; }
+    .plain:hover:not(:disabled) { color: rgba(255,255,255,.85); }
+    .hint { margin-top: 12px; font-size: 12px; line-height: 1.6; color: rgba(255,255,255,.45); }
+    .diag { margin-top: 14px; padding: 12px; border: 1px solid rgba(255,255,255,.12); border-radius: 12px; background: rgba(0,0,0,.25); color: rgba(255,255,255,.62); font-size: 11px; line-height: 1.6; text-align: left; white-space: pre-wrap; word-break: break-all; }
+    .mobile-only { display: none; }
+    body.is-mobile .mobile-only { display: block; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="icon">✓</div>
+    <h1>使用飞牛 NAS 登录</h1>
+    <p id="status">正在获取当前飞牛 NAS 用户…</p>
+
+    <section id="identity" hidden>
+      <p>“提醒事项”正在请求使用下面的飞牛 NAS 账号登录</p>
+      <div class="account">
+        <span class="avatar" id="avatar">飞</span>
+        <span class="name" id="username">当前飞牛 NAS 用户</span>
+      </div>
+      <button id="confirm" class="primary" type="button">确认使用该账号登录</button>
+      <button id="switch" class="ghost" type="button">使用其他飞牛账号</button>
+      <button id="cancel" class="plain" type="button">取消</button>
+      <p class="hint mobile-only">如需更换飞牛账号，请在飞牛 App 中切换后重新打开本应用。</p>
+    </section>
+
+    <section id="failure" hidden>
+      <p id="errorText" class="error"></p>
+      <button id="retry" class="primary" type="button">重试</button>
+      <button id="goLogin" class="ghost" type="button">前往飞牛登录</button>
+      <button id="cancel2" class="plain" type="button">取消</button>
+      <p class="hint mobile-only">请在飞牛 App 中登录后重新打开本应用。</p>
+      <pre id="diag" class="diag" hidden></pre>
+    </section>
+
+    <p id="done" class="ok" hidden>授权成功，正在返回应用…</p>
+  </main>
+  <script>
+  document.addEventListener('DOMContentLoaded', async function () {
+    // 本页是飞牛授权的交互页：账号展示、换账号、确认、取消全部在这里完成，
+    // 应用主页面全程不跳转不刷新。票据交付有两种方式：
+    // 1) 弹窗模式（被应用页 window.open 弹出，有 window.opener）：页面加载后
+    //    先向打开者发 ready 报到——打开者 6 秒收不到 ready 就知道弹窗假活
+    //    （webview 假句柄 / 被拦截），退化为整页流程，绝不傻等；确认后
+    //    postMessage 把一次性票据交还打开者并自关；
+    // 2) 整页模式（手机端 / 弹窗被拦截的退化路径）：确认后把票据放在 hash
+    //    里跳回应用地址，由 SPA 接住继续登录。
+    // 本页同时是飞牛登录页的同源回跳目标（飞牛登录页只接受同源
+    // redirect_uri）：换账号时本窗整页去飞牛登录页，登录成功回到本页重新取票。
+    const base = window.location.pathname.replace(/\/fnos-entry\.html$/, '/');
+    const params = new URLSearchParams(window.location.search);
+    // 是否已经因为「网关没带身份」自动去过一次飞牛登录页：只重试一次，避免循环。
+    const retried = params.get('fnos_retry') === '1';
+    // __APP_PORT__ 由后端按实际监听端口注入，仅用于「无 app_base」的兜底回跳。
+    const servicePort = '__APP_PORT__';
+    const portValid = /^[0-9]{2,5}$/.test(servicePort);
+
+    function parseAppBase() {
+      const raw = params.get('app_base');
+      if (!raw) return null;
+      try {
+        const url = new URL(raw);
+        if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+        if (url.search || url.hash) return null;
+        return url.origin + url.pathname;
+      } catch (e) {
+        return null;
+      }
+    }
+    const appBase = parseAppBase();
+    // 回跳目标：有 app_base 一律回它——打开者知道自己在哪里（网关域的手机 /
+    // 远程入口回到网关域，直连端口回直连端口）。旧逻辑把网关域打开者也改写
+    // 到「网关主机名 + 服务端口」，在手机 / 远程网络里不可达，正是「跳回后
+    // 卡死」的根因。没有 app_base（如飞牛桌面隐藏入口直接打开本页）才退回
+    // 局域网直连地址。
+    let returnBase = appBase;
+    if (!returnBase && portValid) {
+      returnBase = 'http://' + window.location.hostname + ':' + servicePort + base;
+    }
+    // 弹窗模式要求能定位打开者源（postMessage 目标），否则按整页处理——
+    // 带 * 目标源投递票据有泄漏风险，宁可用导航交付。
+    const popupMode = !!window.opener && !!appBase;
+    const messageOrigin = appBase ? new URL(appBase).origin : '*';
+    // 换账号去飞牛登录页后仍回本页：完整保留当前参数（app_base 等）。
+    const selfURL = window.location.href;
+
+    const $ = function (id) { return document.getElementById(id); };
+    // 本页是不是被打开在应用自己的直连端口上？取票接口只在网关 socket 上可用，
+    // 落在直连端口的跳板页必然 401——现场症状就是「未获取到飞牛登录信息」。
+    // （历史遗留的入口地址会把本页带到直连端口，所以这里要认出来并说清楚。）
+    const onDirectListener = portValid && String(window.location.port) === String(servicePort);
+    // 手机端（含飞牛手机 App 网页视图）：换账号按钮仍然隐藏（要整页去飞牛登录页
+    // 换号，手机端不可靠）；但「前往飞牛登录」保留——网关域下它是刷新飞牛会话
+    // 的主动入口，先探测可达再显示，绝不把用户送到打不开的页面。
+    const mobileClient = /Android|iPhone|iPad|iPod|Mobile|HarmonyOS|Windows Phone/i.test(navigator.userAgent || '')
+      || (navigator.maxTouchPoints > 1 && window.matchMedia('(pointer: coarse)').matches);
+    if (mobileClient) {
+      document.body.classList.add('is-mobile');
+      $('switch').hidden = true;
+      $('goLogin').hidden = true;
+      probeURL(window.location.origin + '/login').then(function (ok) { $('goLogin').hidden = !ok; });
+    }
+    function show(section) {
+      $('status').hidden = section !== 'status';
+      $('identity').hidden = section !== 'identity';
+      $('failure').hidden = section !== 'failure';
+      $('done').hidden = section !== 'done';
+    }
+    function showError(message) {
+      $('errorText').textContent = message;
+      $('diag').hidden = true;
+      $('diag').textContent = '';
+      show('failure');
+    }
+    // 探测地址是否可达：no-cors 只关心「有没有响应」，网络层失败才会 reject。
+    async function probeURL(url, timeoutMs) {
+      const controller = new AbortController();
+      const timer = setTimeout(function () { controller.abort(); }, timeoutMs || 4000);
+      try {
+        await fetch(url, { mode: 'no-cors', cache: 'no-store', signal: controller.signal });
+        return true;
+      } catch (e) {
+        return false;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    // 失败时把判定所需的事实直接显示在页面上：本页地址、是否直连端口、取票响应、
+    // 网关是否注入了身份头。这样一次截图就能定位问题，不用再去翻服务端日志。
+    async function collectDiagnosis(status, body) {
+      const lines = [];
+      lines.push('页面地址：' + window.location.href);
+      lines.push('应用服务端口：' + (portValid ? servicePort : '未知') + '；本页端口：' + (window.location.port || '（默认）'));
+      lines.push('本页是否直连端口：' + (onDirectListener ? '是（飞牛身份只在网关域可用）' : '否'));
+      lines.push('取票响应：HTTP ' + (status || '无') + ' ' + String(body || '').slice(0, 160));
+      try {
+        const resp = await fetch('api/auth/fnos/probe', { cache: 'no-store' });
+        const payload = await resp.json();
+        const info = (payload && payload.data) || null;
+        if (!info || typeof info !== 'object') {
+          lines.push('诊断接口不可用：应用版本过旧（需要 v0.3.16 及以上）');
+        } else {
+          lines.push('网关收到的目标：' + (info.host || '（未知）') + (info.uri || ''));
+          lines.push('网关 socket：' + (info.onGatewaySocket ? '是' : '否')
+            + '；注入身份：' + (info.username || '（无）') + ' / ' + (info.userid || '（无）'));
+          lines.push('Authorization：' + (info.authorization || '（无）'));
+          lines.push('请求头：' + ((info.headerNames || []).join(', ') || '（无）'));
+        }
+      } catch (e) {
+        lines.push('网关身份探测失败：' + (e && e.message ? e.message : e));
+      }
+      if (mobileClient) lines.push('客户端：手机浏览器 / 飞牛 App 网页视图');
+      return lines.join('\n');
+    }
+
+    // 弹窗模式先报到：打开者据此确认真弹窗，收不到就退化为整页流程。
+    if (popupMode) {
+      try { window.opener.postMessage({ type: 'fnos_auth_ready' }, messageOrigin); } catch (e) {}
+    }
+
+    // 让服务端记住当前网关入口：直连端口的访问者随后能从引导接口拿到真实
+    // 入口，而不是靠「默认端口」猜。网关域以外调用会被拒，静默忽略；本页若
+    // 就在直连端口上则毫无意义，直接跳过。
+    if (!onDirectListener) {
+      try {
+        fetch('api/auth/fnos/entry', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: window.location.origin + base + 'fnos-entry.html' }),
+        }).catch(function () {});
+      } catch (e) {}
+    }
+
+    // 换账号 / 未登录 / 会话缺失：本窗整页去飞牛登录页，登录成功仍回本页（同源
+    // redirect_uri 才会被飞牛登录页接受），届时用新身份重新取票。跳转前先探一次
+    // 可达性——飞牛 App 的沙箱源只代理 /app/<包名>/，/login 在该源下连不上，直接
+    // 跳只会得到浏览器的「无法访问页面」，就地提示比错误页有用。
+    // withRetryFlag=true 时给回跳地址打上 fnos_retry=1，避免自动重试打成死循环。
+    async function goFnOSLogin(withRetryFlag) {
+      const loginURL = window.location.origin + '/login';
+      if (!(await probeURL(loginURL))) {
+        showError('当前环境无法打开飞牛登录页，请在飞牛 App 中切换飞牛账号后重新打开应用。');
+        return false;
+      }
+      let redirect = selfURL;
+      if (withRetryFlag) {
+        const next = new URL(selfURL);
+        next.searchParams.set('fnos_retry', '1');
+        redirect = next.toString();
+      }
+      window.location.assign(loginURL + '?redirect_uri=' + encodeURIComponent(redirect));
+      return true;
+    }
+
+    function cancel() {
+      if (popupMode) {
+        try { window.opener.postMessage({ type: 'fnos_auth_cancel' }, messageOrigin); } catch (e) {}
+        window.close();
+        $('status').textContent = '已取消，可关闭本窗口';
+        show('status');
+        return;
+      }
+      if (returnBase) window.location.replace(returnBase);
+      else { $('status').textContent = '已取消'; show('status'); }
+    }
+
+    function finishWithTicket(ticket, username) {
+      if (popupMode) {
+        try {
+          window.opener.postMessage({ type: 'fnos_auth_ticket', ticket: ticket, username: username || '' }, messageOrigin);
+        } catch (e) {}
+        show('done');
+        setTimeout(function () { window.close(); }, 300);
+        setTimeout(function () { $('done').textContent = '授权成功，可关闭本窗口返回应用'; }, 1500);
+        return;
+      }
+      if (!returnBase) {
+        showError('缺少应用返回地址，请从应用内重新发起登录');
+        return;
+      }
+      const target = returnBase
+        + '#fnos_ticket=' + encodeURIComponent(ticket)
+        + '&fnos_username=' + encodeURIComponent(username || '')
+        + '&fnos_gateway=' + encodeURIComponent(window.location.origin + base + 'fnos-entry.html');
+      window.location.replace(target);
+      setTimeout(function () { showError('已获取飞牛登录信息，但未能自动返回应用'); }, 6000);
+    }
+
+    $('switch').addEventListener('click', function () { goFnOSLogin(false) });
+    $('goLogin').addEventListener('click', function () { goFnOSLogin(false) });
+    $('cancel').addEventListener('click', cancel);
+    $('cancel2').addEventListener('click', cancel);
+    $('retry').addEventListener('click', function () { window.location.reload(); });
+
+    // 取票必须有时限：网关 / 后端无响应时 fetch 会一直挂着。
+    const TICKET_TIMEOUT_MS = 10000;
+    let ticket = '';
+    let username = '';
+    let httpStatus = 0;
+    let responseText = '';
+    if (onDirectListener) {
+      // 直连端口上取票接口必然 401（它只认网关 socket）：直接说清原因，不做
+      // 无意义的请求，也不让用户陷在「重试」里。
+      const directMessage = '本页被打开在应用直连端口（' + servicePort + '），飞牛身份只在飞牛网关域可用。请从飞牛桌面或飞牛 App 的应用图标重新打开本应用。';
+      showError(directMessage);
+      $('diag').textContent = await collectDiagnosis(0, '本页未发起取票请求（直连端口）');
+      $('diag').hidden = false;
+      return;
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(function () { controller.abort(); }, TICKET_TIMEOUT_MS);
+    try {
+      const resp = await fetch('api/auth/fnos/ticket', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+      });
+      httpStatus = resp.status;
+      responseText = await resp.text();
+      let data = {};
+      try { data = JSON.parse(responseText) || {}; } catch (e) {}
+      if (!resp.ok || data.code !== 0 || !data.data || !data.data.ticket) {
+        const failure = new Error(data.message || '飞牛 NAS 登录失败，请重试。');
+        failure.httpStatus = resp.status;
+        throw failure;
+      }
+      ticket = data.data.ticket;
+      username = typeof data.data.fnos_username === 'string' ? data.data.fnos_username : '';
+    } catch (error) {
+      const aborted = error && error.name === 'AbortError';
+      const status = aborted ? 0 : (error.httpStatus || 0);
+      const message = aborted
+        ? '获取飞牛登录信息超时，请重试。'
+        : (status === 401 ? '未获取到飞牛登录信息，请先登录飞牛 NAS。' : (error.message || '飞牛 NAS 登录失败，请重试。'));
+      // 401 = 网关既没把会话带过来，也没注入身份头。先借飞牛登录页刷一次会话
+      // 再回到本页取票（用户已登录时只是一次跳转）；只重试一次，仍失败就把
+      // 判定所需的事实摊在页面上。
+      if (status === 401 && !retried) {
+        if (await goFnOSLogin(true)) return;
+      }
+      showError(message);
+      $('diag').textContent = await collectDiagnosis(status, aborted ? '（请求超时）' : responseText);
+      $('diag').hidden = false;
+      return;
+    } finally {
+      clearTimeout(timer);
+    }
+
+    $('avatar').textContent = (username || '飞').slice(0, 1);
+    $('username').textContent = username || '当前飞牛 NAS 用户';
+    show('identity');
+    $('confirm').addEventListener('click', function () {
+      $('confirm').disabled = true;
+      finishWithTicket(ticket, username);
+    });
+  });
+  </script>
+</body>
+</html>

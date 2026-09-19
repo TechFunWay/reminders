@@ -3,18 +3,22 @@ package reminder
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+
+	"smallgo/server/lunar"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
 var repeatRules = map[string]bool{
-	"none": true, "daily": true, "weekly": true, "monthly": true, "yearly": true,
+	"none": true, "daily": true, "weekly": true, "monthly": true, "yearly": true, "yearly_lunar": true,
 }
 
 type SaveReminderInput struct {
@@ -25,8 +29,22 @@ type SaveReminderInput struct {
 	DueAt      *time.Time `json:"due_at"`
 	AllDay     bool       `json:"all_day"`
 	RepeatRule string     `json:"repeat_rule"`
-	Channels   []string   `json:"channels"`
-	Version    uint       `json:"version"`
+	// Calendar selects "solar" (default) or "lunar" recurrence for the
+	// monthly/yearly rules. The deprecated repeat_rule value "yearly_lunar"
+	// is normalized to RepeatRule=yearly + Calendar=lunar on save.
+	Calendar string   `json:"calendar"`
+	Channels []string `json:"channels"`
+	// RepeatNotifyMinutes re-notifies an uncompleted reminder on this interval
+	// (in minutes) after each due time; 0 disables it.
+	RepeatNotifyMinutes int `json:"repeat_notify_minutes"`
+	// ChannelTargets optionally maps a multi-target channel (email) to the
+	// ChannelBinding IDs this reminder delivers to. Absent or empty means all.
+	ChannelTargets map[string][]uint `json:"channel_targets"`
+	// LunarAnchor optionally pins the lunar month/day a lunar reminder
+	// recurs on, encoded "M:D" (negative M = leap month). When empty, the
+	// anchor is derived from DueAt on save.
+	LunarAnchor string `json:"lunar_anchor"`
+	Version     uint   `json:"version"`
 }
 
 func ensureDefaultList(tx *gorm.DB, userID uint) (List, error) {
@@ -70,6 +88,34 @@ func validateReminderInput(in *SaveReminderInput) error {
 	if !repeatRules[in.RepeatRule] {
 		return errors.New("重复规则无效")
 	}
+	// "yearly_lunar" is the deprecated pre-v0.3.2 spelling of the lunar
+	// yearly rule; normalize it so old clients keep working.
+	if in.RepeatRule == "yearly_lunar" {
+		in.RepeatRule = "yearly"
+		in.Calendar = "lunar"
+	}
+	switch in.Calendar {
+	case "", "solar":
+		in.Calendar = "solar"
+		in.LunarAnchor = ""
+	case "lunar":
+		if in.RepeatRule != "monthly" && in.RepeatRule != "yearly" {
+			return errors.New("农历循环仅支持每月或每年")
+		}
+		if in.DueAt == nil {
+			return errors.New("农历循环需要先选择提醒日期")
+		}
+		anchor, err := normalizeLunarAnchor(in.LunarAnchor, *in.DueAt)
+		if err != nil {
+			return err
+		}
+		in.LunarAnchor = anchor
+	default:
+		return errors.New("历法无效，仅支持公历或农历")
+	}
+	if in.RepeatNotifyMinutes < 0 || in.RepeatNotifyMinutes > 60*24*31 {
+		return errors.New("过期提醒频率无效，最长 31 天")
+	}
 	if len(in.Channels) == 0 {
 		in.Channels = []string{ChannelInApp}
 	}
@@ -87,7 +133,34 @@ func validateReminderInput(in *SaveReminderInput) error {
 	}
 	sort.Strings(clean)
 	in.Channels = clean
+	// Per-reminder mailbox selection only applies when the email channel is
+	// selected; every other key is ignored.
+	if in.ChannelTargets != nil {
+		cleaned := map[string][]uint{}
+		for _, ch := range in.Channels {
+			if ch != ChannelEmail {
+				continue
+			}
+			if ids := dedupeUint(in.ChannelTargets[ch]); len(ids) > 0 {
+				cleaned[ch] = ids
+			}
+		}
+		in.ChannelTargets = cleaned
+	}
 	return nil
+}
+
+func dedupeUint(values []uint) []uint {
+	seen := map[uint]bool{}
+	clean := make([]uint, 0, len(values))
+	for _, value := range values {
+		if value > 0 && !seen[value] {
+			seen[value] = true
+			clean = append(clean, value)
+		}
+	}
+	sort.Slice(clean, func(i, j int) bool { return clean[i] < clean[j] })
+	return clean
 }
 
 func createReminder(db *gorm.DB, userID uint, in SaveReminderInput) (ReminderDTO, error) {
@@ -109,12 +182,13 @@ func createReminder(db *gorm.DB, userID uint, in SaveReminderInput) (ReminderDTO
 		created = Reminder{
 			UserID: userID, ListID: in.ListID, Title: in.Title, Notes: in.Notes,
 			Priority: in.Priority, DueAt: in.DueAt, AllDay: in.AllDay,
-			RepeatRule: in.RepeatRule, Version: 1,
+			RepeatRule: in.RepeatRule, Calendar: in.Calendar, LunarAnchor: in.LunarAnchor,
+			RepeatNotifyMinutes: in.RepeatNotifyMinutes, Version: 1,
 		}
 		if err := tx.Create(&created).Error; err != nil {
 			return err
 		}
-		if err := replaceChannels(tx, created, in.Channels); err != nil {
+		if err := replaceChannels(tx, created, in); err != nil {
 			return err
 		}
 		return rebuildJobs(tx, created, in.Channels)
@@ -152,12 +226,15 @@ func updateReminder(db *gorm.DB, userID, reminderID uint, in SaveReminderInput) 
 		existing.DueAt = in.DueAt
 		existing.AllDay = in.AllDay
 		existing.RepeatRule = in.RepeatRule
+		existing.Calendar = in.Calendar
+		existing.LunarAnchor = in.LunarAnchor
+		existing.RepeatNotifyMinutes = in.RepeatNotifyMinutes
 		existing.SnoozedUntil = nil
 		existing.Version++
 		if err := tx.Save(&existing).Error; err != nil {
 			return err
 		}
-		if err := replaceChannels(tx, existing, in.Channels); err != nil {
+		if err := replaceChannels(tx, existing, in); err != nil {
 			return err
 		}
 		return rebuildJobs(tx, existing, in.Channels)
@@ -181,18 +258,44 @@ func assertListOwner(tx *gorm.DB, userID, listID uint) error {
 	return nil
 }
 
-func replaceChannels(tx *gorm.DB, reminder Reminder, channels []string) error {
+func replaceChannels(tx *gorm.DB, reminder Reminder, in SaveReminderInput) error {
 	if err := tx.Where("reminder_id = ? AND user_id = ?", reminder.ID, reminder.UserID).Delete(&ReminderChannel{}).Error; err != nil {
 		return err
 	}
-	rows := make([]ReminderChannel, 0, len(channels))
-	for _, ch := range channels {
-		rows = append(rows, ReminderChannel{ReminderID: reminder.ID, UserID: reminder.UserID, Channel: ch, Enabled: true})
+	rows := make([]ReminderChannel, 0, len(in.Channels))
+	for _, ch := range in.Channels {
+		row := ReminderChannel{ReminderID: reminder.ID, UserID: reminder.UserID, Channel: ch, Enabled: true}
+		if ch == ChannelEmail && len(in.ChannelTargets[ch]) > 0 {
+			ids, err := ownedEmailBindingIDs(tx, reminder.UserID, in.ChannelTargets[ch])
+			if err != nil {
+				return err
+			}
+			if len(ids) > 0 {
+				raw, err := json.Marshal(ids)
+				if err != nil {
+					return err
+				}
+				row.Targets = string(raw)
+			}
+		}
+		rows = append(rows, row)
 	}
 	if len(rows) == 0 {
 		return nil
 	}
 	return tx.Create(&rows).Error
+}
+
+// ownedEmailBindingIDs keeps only the IDs that belong to the user's own email
+// bindings, so a crafted request cannot reference another account's targets.
+func ownedEmailBindingIDs(tx *gorm.DB, userID uint, wanted []uint) ([]uint, error) {
+	var ids []uint
+	if err := tx.Model(&ChannelBinding{}).
+		Where("user_id = ? AND channel = ? AND id IN ?", userID, ChannelEmail, wanted).
+		Order("id ASC").Pluck("id", &ids).Error; err != nil {
+		return nil, err
+	}
+	return ids, nil
 }
 
 func rebuildJobs(tx *gorm.DB, reminder Reminder, channels []string) error {
@@ -248,8 +351,25 @@ func getReminder(db *gorm.DB, userID, reminderID uint) (ReminderDTO, error) {
 	dto := ReminderDTO{Reminder: item, ListName: list.Name}
 	for _, ch := range channels {
 		dto.Channels = append(dto.Channels, ch.Channel)
+		if ch.Channel == ChannelEmail {
+			if ids := parseChannelTargets(ch.Targets); len(ids) > 0 {
+				dto.ChannelTargets = map[string][]uint{ChannelEmail: ids}
+			}
+		}
 	}
 	return dto, nil
+}
+
+func parseChannelTargets(raw string) []uint {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var ids []uint
+	if err := json.Unmarshal([]byte(raw), &ids); err != nil {
+		return nil
+	}
+	return ids
 }
 
 func listReminders(db *gorm.DB, userID uint, view, query string, listID uint) ([]ReminderDTO, error) {
@@ -301,8 +421,14 @@ func listReminders(db *gorm.DB, userID uint, view, query string, listID uint) ([
 		return nil, err
 	}
 	channelsByReminder := make(map[uint][]string, len(rows))
+	targetsByReminder := map[uint]map[string][]uint{}
 	for _, channel := range channelRows {
 		channelsByReminder[channel.ReminderID] = append(channelsByReminder[channel.ReminderID], channel.Channel)
+		if channel.Channel == ChannelEmail {
+			if ids := parseChannelTargets(channel.Targets); len(ids) > 0 {
+				targetsByReminder[channel.ReminderID] = map[string][]uint{ChannelEmail: ids}
+			}
+		}
 	}
 
 	var lists []List
@@ -317,12 +443,23 @@ func listReminders(db *gorm.DB, userID uint, view, query string, listID uint) ([
 	result := make([]ReminderDTO, 0, len(rows))
 	for _, row := range rows {
 		result = append(result, ReminderDTO{
-			Reminder: row,
-			Channels: channelsByReminder[row.ID],
-			ListName: listNames[row.ListID],
+			Reminder:       row,
+			Channels:       channelsByReminder[row.ID],
+			ChannelTargets: targetsByReminder[row.ID],
+			ListName:       listNames[row.ListID],
 		})
 	}
 	return result, nil
+}
+
+// retireDueNotifications 把一条提醒仍未读的到点通知标为已读，供完成、稍后提醒、
+// 删除三种处理复用（与提醒的改动放在同一事务里）。这条「到点了」的提醒既然已被
+// 处理，通知中心不该再挂着未读角标，其它设备上依赖已读状态的到点补弹（前端
+// MainLayout 的 recoverMissedAlerts）也不能再把它弹出来。
+func retireDueNotifications(tx *gorm.DB, userID, reminderID uint, at time.Time) error {
+	return tx.Model(&Notification{}).
+		Where("user_id = ? AND reminder_id = ? AND type = ? AND read_at IS NULL", userID, reminderID, "reminder_due").
+		Update("read_at", &at).Error
 }
 
 func deleteReminder(db *gorm.DB, userID, reminderID uint) error {
@@ -335,6 +472,9 @@ func deleteReminder(db *gorm.DB, userID, reminderID uint) error {
 			return err
 		}
 		now := time.Now()
+		if err := retireDueNotifications(tx, userID, reminderID, now); err != nil {
+			return err
+		}
 		return tx.Model(&item).Update("deleted_at", &now).Error
 	})
 }
@@ -351,7 +491,10 @@ func completeReminder(db *gorm.DB, userID, reminderID uint) (ReminderDTO, error)
 			if err := tx.Create(&history).Error; err != nil {
 				return err
 			}
-			next := nextOccurrence(*item.DueAt, item.RepeatRule)
+			next, err := nextOccurrenceWithCalendar(*item.DueAt, item.RepeatRule, item.Calendar, item.LunarAnchor)
+			if err != nil {
+				return err
+			}
 			item.DueAt = &next
 			item.CompletedAt = nil
 			item.SnoozedUntil = nil
@@ -369,6 +512,9 @@ func completeReminder(db *gorm.DB, userID, reminderID uint) (ReminderDTO, error)
 		channels := make([]string, 0, len(channelRows))
 		for _, row := range channelRows {
 			channels = append(channels, row.Channel)
+		}
+		if err := retireDueNotifications(tx, userID, reminderID, now); err != nil {
+			return err
 		}
 		return rebuildJobs(tx, item, channels)
 	})
@@ -427,12 +573,76 @@ func snoozeReminder(db *gorm.DB, userID, reminderID uint, until time.Time) (Remi
 		for _, row := range channelRows {
 			channels = append(channels, row.Channel)
 		}
+		if err := retireDueNotifications(tx, userID, reminderID, time.Now()); err != nil {
+			return err
+		}
 		return rebuildJobs(tx, item, channels)
 	})
 	if err != nil {
 		return ReminderDTO{}, err
 	}
 	return getReminder(db, userID, reminderID)
+}
+
+// nextOccurrenceWithCalendar dispatches to the lunar calendar when the
+// reminder follows it, and to the plain Gregorian rules otherwise. Lunar
+// recurrence never fails hard here: if the anchor is missing or unreadable
+// the reminder simply keeps its current due date, which leaves the delivery
+// jobs untouched.
+func nextOccurrenceWithCalendar(t time.Time, rule, calendar, anchor string) (time.Time, error) {
+	if calendar == "lunar" {
+		parsed, ok := parseLunarAnchor(anchor)
+		if !ok {
+			return t, nil
+		}
+		loc, _ := time.LoadLocation("Asia/Shanghai")
+		switch rule {
+		case "monthly":
+			return lunar.NextMonthlyOccurrence(parsed.Day, t, loc)
+		case "yearly":
+			return lunar.NextOccurrence(parsed, t, loc)
+		}
+	}
+	return nextOccurrence(t, rule), nil
+}
+
+// parseLunarAnchor decodes the stored "M:D" lunar anchor. A missing colon,
+// out-of-range month, or non-positive day means the anchor was never stored
+// or is corrupt; the caller falls back to keeping the current due date.
+func parseLunarAnchor(anchor string) (lunar.Date, bool) {
+	monthStr, dayStr, found := strings.Cut(anchor, ":")
+	if !found {
+		return lunar.Date{}, false
+	}
+	month, errMonth := strconv.Atoi(monthStr)
+	day, errDay := strconv.Atoi(dayStr)
+	if errMonth != nil || errDay != nil {
+		return lunar.Date{}, false
+	}
+	absMonth := month
+	if absMonth < 0 {
+		absMonth = -absMonth
+	}
+	if absMonth < 1 || absMonth > 12 || day < 1 || day > 30 {
+		return lunar.Date{}, false
+	}
+	return lunar.Date{Year: 0, Month: month, Day: day}, true
+}
+
+// normalizeLunarAnchor validates a client-provided lunar anchor or derives
+// one from the reminder's due date when the client did not supply one.
+func normalizeLunarAnchor(anchor string, due time.Time) (string, error) {
+	anchor = strings.TrimSpace(anchor)
+	if anchor == "" {
+		loc, _ := time.LoadLocation("Asia/Shanghai")
+		converted := lunar.FromTime(due.In(loc))
+		return fmt.Sprintf("%d:%d", converted.Month, converted.Day), nil
+	}
+	parsed, ok := parseLunarAnchor(anchor)
+	if !ok {
+		return "", errors.New("农历锚点格式无效")
+	}
+	return fmt.Sprintf("%d:%d", parsed.Month, parsed.Day), nil
 }
 
 func nextOccurrence(t time.Time, rule string) time.Time {
