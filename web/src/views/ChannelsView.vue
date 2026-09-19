@@ -1,16 +1,16 @@
 <template>
   <div class="mx-auto max-w-5xl">
-    <div class="mb-7">
-      <p class="mb-2 text-xs font-extrabold uppercase tracking-[.18em] text-violet-500">随时触达</p>
-      <h1 class="font-display text-3xl font-extrabold tracking-tight">通知方式</h1>
-      <p class="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">站内消息默认可用。已开通的方式，绑定一次即可在每条提醒中自由选择。</p>
+    <div class="mb-4 sm:mb-7">
+      <p class="mb-1 text-xs font-extrabold uppercase tracking-[.18em] text-violet-500 sm:mb-2">随时触达</p>
+      <h1 class="font-display text-2xl font-extrabold tracking-tight sm:text-3xl">通知方式</h1>
+      <p class="mt-0.5 max-w-2xl text-[13px] leading-5 text-muted-foreground sm:mt-2 sm:text-sm sm:leading-6">站内消息默认可用。已开通的方式，绑定一次即可在每条提醒中自由选择。</p>
     </div>
 
-    <div class="mb-5 rounded-2xl border border-blue-500/15 bg-blue-500/[.06] px-4 py-3 text-xs leading-5 text-blue-700 dark:text-blue-200">
-      选择你想接收提醒的方式即可。邮件需要先配置“发件邮箱”，再绑定“接收邮箱”；飞书请填写接收提醒消息的工作邮箱或手机号，不需要查找 OpenID。
+    <div class="mb-4 rounded-2xl border border-blue-500/15 bg-blue-500/[.06] px-3.5 py-2.5 text-xs leading-5 text-blue-700 dark:text-blue-200 sm:mb-5 sm:px-4 sm:py-3">
+      选择你想接收提醒的方式即可。邮件需要先配置“发件邮箱”，再绑定“接收邮箱”；接收邮箱可以绑定多个，到点的提醒会同时发给全部已启用的邮箱。飞书请填写接收提醒消息的工作邮箱或手机号，不需要查找 OpenID。
     </div>
 
-    <section v-if="authStore.isAdmin" class="mb-5 flex flex-col gap-3 rounded-2xl border border-violet-500/15 bg-violet-500/[.05] p-4 sm:flex-row sm:items-end">
+    <section v-if="authStore.isAdmin" class="mb-4 flex flex-col gap-3 rounded-2xl border border-violet-500/15 bg-violet-500/[.05] p-3.5 sm:mb-5 sm:flex-row sm:items-end sm:p-4">
       <label class="min-w-0 flex-1 text-xs font-extrabold text-foreground">机器人消息来源名称
         <input v-model.trim="notificationBrand" class="bind-input mt-2" maxlength="40" placeholder="例如：我的提醒" />
       </label>
@@ -20,6 +20,12 @@
 
     <div v-if="loading" class="grid gap-4 md:grid-cols-2">
       <div v-for="n in 4" :key="n" class="h-52 animate-pulse rounded-[24px] bg-surface"></div>
+    </div>
+
+    <div v-else-if="loadError" class="flex min-h-[220px] flex-col items-center justify-center gap-3 rounded-[24px] border border-dashed border-rose-500/30 bg-rose-500/[.04] px-6 text-center">
+      <svg class="h-10 w-10 text-rose-500/70" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 9v4m0 4h.01M10.3 3.8 2.5 17.2A2 2 0 0 0 4.2 20h15.6a2 2 0 0 0 1.7-2.8L13.7 3.8a2 2 0 0 0-3.4 0Z" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <p class="text-sm font-semibold text-rose-500">{{ loadError }}</p>
+      <button class="rounded-xl border border-border bg-surface px-4 py-2 text-xs font-bold text-foreground transition hover:bg-muted" @click="load()">重试</button>
     </div>
 
     <div v-else class="grid gap-4 md:grid-cols-2">
@@ -42,11 +48,36 @@
           更换机器人 App ID / App Secret
         </button>
 
-        <div v-if="channel.channel === 'inapp'" class="mt-5 rounded-2xl bg-emerald-500/[.07] px-4 py-3 text-xs font-semibold text-emerald-600 dark:text-emerald-300">
+        <div v-if="channel.channel === 'inapp'" class="mt-4 sm:mt-5 rounded-2xl bg-emerald-500/[.07] px-4 py-3 text-xs font-semibold text-emerald-600 dark:text-emerald-300">
           ✓ 已启用，提醒会保存在通知中心
         </div>
 
-        <div v-else-if="channel.bound" class="mt-5">
+        <div v-else-if="channel.channel === 'email' && channel.bound" class="mt-4 sm:mt-5">
+          <div class="rounded-2xl border border-border bg-muted/45 px-4 py-3">
+            <div class="flex items-center justify-between">
+              <p class="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">已绑定 {{ channel.bindings?.length || 0 }} 个接收邮箱</p>
+              <span class="h-2.5 w-2.5 rounded-full" :class="channel.configured && channel.status === 'active' ? 'bg-emerald-500' : 'bg-amber-500'"></span>
+            </div>
+            <ul class="mt-2 space-y-2">
+              <li v-for="binding in channel.bindings" :key="binding.id" class="flex items-center justify-between gap-3">
+                <span class="min-w-0 truncate text-sm font-bold">{{ binding.target_masked }}</span>
+                <button class="shrink-0 text-xs font-bold text-rose-500 disabled:opacity-40" :disabled="busy === `email-${binding.id}`" @click="removeBinding(channel, binding)">{{ busy === `email-${binding.id}` ? '删除中…' : '删除' }}</button>
+              </li>
+            </ul>
+          </div>
+          <form class="mt-3 flex gap-2" @submit.prevent="bind(channel)">
+            <input v-model="targets[channel.channel]" class="bind-input" type="email" placeholder="添加新的接收邮箱" />
+            <button class="bind-button" :disabled="busy === channel.channel || !targets[channel.channel]?.trim()">{{ busy === channel.channel ? '添加中' : '添加' }}</button>
+          </form>
+          <p class="mt-2 text-[10px] leading-4 text-muted-foreground">到点的提醒会发送给以上全部已启用的接收邮箱；每个邮箱都可以单独删除。</p>
+          <div class="mt-3 flex gap-2">
+            <button class="channel-button primary" :disabled="busy === channel.channel || !channel.configured" @click="test(channel)">
+              {{ busy === channel.channel ? '发送中…' : channel.configured ? '发送测试' : '服务端未配置' }}
+            </button>
+          </div>
+        </div>
+
+        <div v-else-if="channel.bound" class="mt-4 sm:mt-5">
           <div class="flex items-center justify-between rounded-2xl border border-border bg-muted/45 px-4 py-3">
             <div>
               <p class="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">已绑定</p>
@@ -63,7 +94,7 @@
           </div>
         </div>
 
-        <div v-else-if="!channel.configured && channel.channel === 'feishu' && authStore.isAdmin" class="mt-5 rounded-2xl border border-cyan-500/20 bg-cyan-500/[.06] p-4">
+        <div v-else-if="!channel.configured && channel.channel === 'feishu' && authStore.isAdmin" class="mt-4 sm:mt-5 rounded-2xl border border-cyan-500/20 bg-cyan-500/[.06] p-4">
           <p class="text-sm font-extrabold">开通飞书机器人</p>
           <p class="mt-1 text-xs leading-5 text-muted-foreground">填写飞书开放平台的应用凭证。保存后立即生效，无需重启；凭证仅加密保存在本应用中。</p>
           <form class="mt-4 space-y-3" @submit.prevent="configureFeishu">
@@ -109,12 +140,12 @@
           </form>
         </div>
 
-        <div v-else-if="!channel.configured" class="mt-5 rounded-2xl border border-amber-500/15 bg-amber-500/[.06] px-4 py-3 text-xs leading-5 text-muted-foreground">
+        <div v-else-if="!channel.configured" class="mt-4 sm:mt-5 rounded-2xl border border-amber-500/15 bg-amber-500/[.06] px-4 py-3 text-xs leading-5 text-muted-foreground">
           <strong class="text-foreground">暂未开通</strong>
           <p class="mt-1">该方式尚未由应用管理员开通。</p>
         </div>
 
-        <div v-else-if="channel.channel === 'qq'" class="mt-5 rounded-2xl border border-rose-500/15 bg-rose-500/[.04] p-4">
+        <div v-else-if="channel.channel === 'qq'" class="mt-4 sm:mt-5 rounded-2xl border border-rose-500/15 bg-rose-500/[.04] p-4">
           <p class="text-sm font-extrabold">绑定 QQ</p>
           <template v-if="qqBindCode">
             <p class="mt-2 text-xs text-muted-foreground">先打开机器人，再发送以下消息（10 分钟内有效）：</p>
@@ -130,7 +161,7 @@
           </template>
         </div>
 
-        <div v-else-if="channel.channel === 'dingtalk'" class="mt-5 rounded-2xl border border-sky-500/15 bg-sky-500/[.05] p-4">
+        <div v-else-if="channel.channel === 'dingtalk'" class="mt-4 sm:mt-5 rounded-2xl border border-sky-500/15 bg-sky-500/[.05] p-4">
           <p class="text-sm font-extrabold">绑定钉钉群机器人</p>
           <p class="mt-2 rounded-xl bg-amber-500/[.08] px-3 py-2 text-xs font-semibold leading-5 text-amber-700 dark:text-amber-200">请使用 Windows 或 Mac 的钉钉电脑端操作；手机端无法创建或配置此机器人。</p>
           <ol class="mt-2 list-decimal space-y-1 pl-4 text-xs leading-5 text-muted-foreground">
@@ -150,13 +181,13 @@
           </form>
         </div>
 
-        <form v-else class="mt-5" @submit.prevent="bind(channel)">
+        <form v-else class="mt-4 sm:mt-5" @submit.prevent="bind(channel)">
           <label class="text-[11px] font-bold text-muted-foreground">{{ inputLabel(channel.channel) }}</label>
           <div class="mt-2 flex gap-2">
             <input v-model="targets[channel.channel]" class="bind-input" :placeholder="placeholder(channel.channel)" :type="channel.channel === 'email' ? 'email' : 'text'" />
             <button class="bind-button" :disabled="busy === channel.channel || !targets[channel.channel]?.trim()">{{ busy === channel.channel ? '绑定中' : '绑定' }}</button>
           </div>
-          <p v-if="channel.channel === 'email'" class="mt-2 text-[10px] leading-4 text-muted-foreground">填写提醒实际送达的接收邮箱。它可以与发件邮箱相同，也可以不同。</p>
+          <p v-if="channel.channel === 'email'" class="mt-2 text-[10px] leading-4 text-muted-foreground">填写提醒实际送达的接收邮箱。它可以与发件邮箱相同，也可以不同；绑定后还可以继续添加多个。</p>
           <p v-else-if="channel.channel === 'feishu'" class="mt-2 text-[10px] leading-4 text-muted-foreground">填写你在飞书中要接收提醒消息的工作邮箱或手机号。</p>
         </form>
 
@@ -165,9 +196,9 @@
     </div>
 
     <Toast :message="toast.message" :type="toast.type" />
-    <Teleport to="body"><div v-if="confirmChannel" class="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/35 p-5 backdrop-blur-sm"><section class="w-full max-w-sm rounded-[28px] border border-white/40 bg-surface p-6 shadow-2xl"><div class="flex h-11 w-11 items-center justify-center rounded-2xl bg-rose-500/10 text-xl text-rose-500">!</div><h2 class="mt-4 text-lg font-extrabold">解绑{{ confirmChannel.label }}？</h2><p class="mt-2 text-sm leading-6 text-muted-foreground">解绑后将停止通过此方式接收提醒；之后可以随时重新绑定。</p><div class="mt-6 flex gap-3"><button class="channel-button" @click="confirmChannel = null">取消</button><button class="flex-1 rounded-xl bg-rose-500 px-3 py-2 text-xs font-bold text-white" @click="confirmRemove">确认解绑</button></div></section></div></Teleport>
-    <Teleport to="body"><div v-if="emailSetupOpen" class="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/35 p-4 backdrop-blur-sm"><form class="w-full max-w-lg rounded-[28px] border border-white/40 bg-surface p-6 shadow-2xl sm:p-8" @submit.prevent="saveSimpleEmail"><div class="flex items-center justify-between gap-4"><div><p class="text-xs font-extrabold uppercase tracking-[.16em] text-violet-500">邮件提醒</p><h2 class="mt-1 text-2xl font-extrabold">邮件通知服务设置</h2></div><button type="button" class="icon-button" aria-label="关闭" @click="emailSetupOpen = false">×</button></div><p class="mt-4 rounded-2xl bg-blue-500/[.07] px-4 py-3 text-xs leading-5 text-blue-700 dark:text-blue-200">这一步设置的是发件邮箱：系统会使用它的 SMTP 服务和授权码发出提醒。设置完成后，请在邮件卡片中再填写提醒要送达的接收邮箱；两个邮箱可以相同，也可以不同。</p><label class="modal-label mt-7">服务提供商 <span>*</span><select v-model="emailSetup.provider" class="modal-field mt-2"><option value="qq">QQ 邮箱</option><option value="163">163 邮箱</option><option value="gmail">Gmail</option><option value="custom">其他 SMTP 服务</option></select></label><label class="modal-label mt-5">发件邮箱地址 <span>*</span><input v-model.trim="emailSetup.address" class="modal-field mt-2" type="email" maxlength="80" placeholder="请输入发件邮箱地址" /></label><label class="modal-label mt-5">发件人名称 <small>可选</small><input v-model.trim="emailSetup.sender_name" class="modal-field mt-2" maxlength="40" placeholder="例如：我的提醒" /></label><template v-if="emailSetup.provider === 'custom'"><label class="modal-label mt-5">SMTP 服务器 <span>*</span><input v-model.trim="emailSetup.host" class="modal-field mt-2" placeholder="例如 smtp.example.com" /></label><label class="modal-label mt-5">端口 <span>*</span><input v-model.trim="emailSetup.port" class="modal-field mt-2" inputmode="numeric" placeholder="465 或 587" /></label></template><label class="modal-label mt-5">发件邮箱授权码 <span>*</span><input v-model.trim="emailSetup.password" class="modal-field mt-2" type="password" placeholder="请输入发件邮箱对应的授权码（不是邮箱登录密码）" autocomplete="new-password" /></label><p class="mt-4 text-[11px] leading-4 text-muted-foreground">授权码需在对应邮箱服务商的设置中生成，不能填写邮箱登录密码。</p><p class="mt-4 rounded-2xl bg-blue-500/[.07] px-4 py-3 text-xs leading-5 text-blue-700 dark:text-blue-200">{{ emailProviderTip }}</p><div class="mt-7 flex justify-end gap-3"><button type="button" class="channel-button !flex-none" @click="emailSetupOpen = false">取消</button><button class="rounded-xl bg-brand-500 px-5 py-2 text-sm font-bold text-white disabled:opacity-50" :disabled="busy === 'email-config' || !emailSetup.address || !emailSetup.password || (emailSetup.provider === 'custom' && (!emailSetup.host || !emailSetup.port))">{{ busy === 'email-config' ? '保存中…' : '保存并开通' }}</button></div></form></div></Teleport>
-    <Teleport to="body"><div v-if="botSetupChannel" class="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/35 p-4 backdrop-blur-sm"><form class="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-[28px] border border-white/40 bg-surface p-6 shadow-2xl sm:p-8" @submit.prevent="saveBotCredentials"><div class="flex items-center justify-between gap-4"><div><p class="text-xs font-extrabold uppercase tracking-[.16em] text-violet-500">机器人应用</p><h2 class="mt-1 text-2xl font-extrabold">更换{{ botSetupChannel === 'feishu' ? '飞书' : 'QQ' }}应用凭证</h2></div><button type="button" class="icon-button" aria-label="关闭" @click="botSetupChannel = ''">×</button></div><p class="mt-4 rounded-2xl bg-blue-500/[.07] px-4 py-3 text-xs leading-5 text-blue-700 dark:text-blue-200">保存后请使用新的机器人重新绑定当前账号：飞书填写接收提醒消息的工作邮箱或手机号；QQ 获取新的绑定码后发给机器人。</p><template v-if="botSetupChannel === 'feishu'"><label class="modal-label mt-6">App ID <span>*</span><input v-model.trim="feishuConfig.app_id" class="modal-field mt-2" placeholder="例如 cli_xxxxx" autocomplete="off" /></label><label class="modal-label mt-5">App Secret <span>*</span><input v-model.trim="feishuConfig.app_secret" class="modal-field mt-2" type="password" placeholder="请输入新的 App Secret" autocomplete="new-password" /></label></template><template v-else><label class="modal-label mt-6">QQ 机器人 App ID <span>*</span><input v-model.trim="providerConfig.qq.app_id" class="modal-field mt-2" placeholder="例如：1903753507" autocomplete="off" /></label><p class="modal-help">QQ 开放平台创建机器人后生成的唯一标识。</p><label class="modal-label mt-5">QQ 机器人 App Secret <span>*</span><input v-model.trim="providerConfig.qq.app_secret" class="modal-field mt-2" type="password" placeholder="请输入新的 App Secret" autocomplete="new-password" /></label><p class="modal-help">与 App ID 配套的密钥，只用于换取 QQ 访问凭证，请勿分享。</p><label class="modal-label mt-5">机器人主页 / 邀请链接 <small>推荐</small><input v-model.trim="providerConfig.qq.bot_link" class="modal-field mt-2" type="url" placeholder="例如：https://q.qq.com/..." /></label><p class="modal-help">用于显示“打开 QQ 机器人”按钮，不参与消息发送。</p><label class="modal-label mt-5">消息 API 地址 <small>可选</small><input v-model.trim="providerConfig.qq.api_base" class="modal-field mt-2" placeholder="留空使用 https://api.bot.qq.com" /></label><p class="modal-help">一般留空，仅代理或兼容网关场景需要填写；获取访问凭证仍使用 QQ 官方地址。</p></template><div class="mt-7 flex justify-end gap-3"><button type="button" class="channel-button !flex-none" @click="botSetupChannel = ''">取消</button><button class="rounded-xl bg-brand-500 px-5 py-2 text-sm font-bold text-white disabled:opacity-50" :disabled="botSaveDisabled">{{ busy.endsWith('-config') ? '保存中…' : '保存新的凭证' }}</button></div></form></div></Teleport>
+    <Teleport to="body"><div v-if="confirmChannel" class="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/35 p-5 backdrop-blur-sm"><section class="w-full max-w-sm rounded-[28px] border border-white/40 bg-surface p-5 shadow-2xl sm:p-6"><div class="flex h-11 w-11 items-center justify-center rounded-2xl bg-rose-500/10 text-xl text-rose-500">!</div><h2 class="mt-4 text-lg font-extrabold">解绑{{ confirmChannel.label }}？</h2><p class="mt-2 text-sm leading-6 text-muted-foreground">解绑后将停止通过此方式接收提醒；之后可以随时重新绑定。</p><div class="mt-5 flex gap-3"><button class="channel-button" @click="confirmChannel = null">取消</button><button class="flex-1 rounded-xl bg-rose-500 px-3 py-2 text-xs font-bold text-white" @click="confirmRemove">确认解绑</button></div></section></div></Teleport>
+    <Teleport to="body"><div v-if="emailSetupOpen" class="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/35 p-4 backdrop-blur-sm"><form class="w-full max-w-lg rounded-[28px] border border-white/40 bg-surface p-5 shadow-2xl sm:p-8" @submit.prevent="saveSimpleEmail"><div class="flex items-center justify-between gap-4"><div><p class="text-xs font-extrabold uppercase tracking-[.16em] text-violet-500">邮件提醒</p><h2 class="mt-1 text-2xl font-extrabold">邮件通知服务设置</h2></div><button type="button" class="icon-button" aria-label="关闭" @click="emailSetupOpen = false">×</button></div><p class="mt-4 rounded-2xl bg-blue-500/[.07] px-4 py-3 text-xs leading-5 text-blue-700 dark:text-blue-200">这一步设置的是发件邮箱：系统会使用它的 SMTP 服务和授权码发出提醒。设置完成后，请在邮件卡片中再填写提醒要送达的接收邮箱；两个邮箱可以相同，也可以不同。</p><label class="modal-label mt-5 sm:mt-7">服务提供商 <span>*</span><select v-model="emailSetup.provider" class="modal-field mt-2"><option value="qq">QQ 邮箱</option><option value="163">163 邮箱</option><option value="gmail">Gmail</option><option value="custom">其他 SMTP 服务</option></select></label><label class="modal-label mt-5">发件邮箱地址 <span>*</span><input v-model.trim="emailSetup.address" class="modal-field mt-2" type="email" maxlength="80" placeholder="请输入发件邮箱地址" /></label><label class="modal-label mt-5">发件人名称 <small>可选</small><input v-model.trim="emailSetup.sender_name" class="modal-field mt-2" maxlength="40" placeholder="例如：我的提醒" /></label><template v-if="emailSetup.provider === 'custom'"><label class="modal-label mt-5">SMTP 服务器 <span>*</span><input v-model.trim="emailSetup.host" class="modal-field mt-2" placeholder="例如 smtp.example.com" /></label><label class="modal-label mt-5">端口 <span>*</span><input v-model.trim="emailSetup.port" class="modal-field mt-2" inputmode="numeric" placeholder="465 或 587" /></label></template><label class="modal-label mt-5">发件邮箱授权码 <span>*</span><input v-model.trim="emailSetup.password" class="modal-field mt-2" type="password" placeholder="请输入发件邮箱对应的授权码（不是邮箱登录密码）" autocomplete="new-password" /></label><p class="mt-4 text-[11px] leading-4 text-muted-foreground">授权码需在对应邮箱服务商的设置中生成，不能填写邮箱登录密码。</p><p class="mt-4 rounded-2xl bg-blue-500/[.07] px-4 py-3 text-xs leading-5 text-blue-700 dark:text-blue-200">{{ emailProviderTip }}</p><div class="mt-7 flex justify-end gap-3"><button type="button" class="channel-button !flex-none" @click="emailSetupOpen = false">取消</button><button class="rounded-xl bg-brand-500 px-5 py-2 text-sm font-bold text-white disabled:opacity-50" :disabled="busy === 'email-config' || !emailSetup.address || !emailSetup.password || (emailSetup.provider === 'custom' && (!emailSetup.host || !emailSetup.port))">{{ busy === 'email-config' ? '保存中…' : '保存并开通' }}</button></div></form></div></Teleport>
+    <Teleport to="body"><div v-if="botSetupChannel" class="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/35 p-4 backdrop-blur-sm"><form class="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-[28px] border border-white/40 bg-surface p-5 shadow-2xl sm:p-8" @submit.prevent="saveBotCredentials"><div class="flex items-center justify-between gap-4"><div><p class="text-xs font-extrabold uppercase tracking-[.16em] text-violet-500">机器人应用</p><h2 class="mt-1 text-2xl font-extrabold">更换{{ botSetupChannel === 'feishu' ? '飞书' : 'QQ' }}应用凭证</h2></div><button type="button" class="icon-button" aria-label="关闭" @click="botSetupChannel = ''">×</button></div><p class="mt-4 rounded-2xl bg-blue-500/[.07] px-4 py-3 text-xs leading-5 text-blue-700 dark:text-blue-200">保存后请使用新的机器人重新绑定当前账号：飞书填写接收提醒消息的工作邮箱或手机号；QQ 获取新的绑定码后发给机器人。</p><template v-if="botSetupChannel === 'feishu'"><label class="modal-label mt-5">App ID <span>*</span><input v-model.trim="feishuConfig.app_id" class="modal-field mt-2" placeholder="例如 cli_xxxxx" autocomplete="off" /></label><label class="modal-label mt-5">App Secret <span>*</span><input v-model.trim="feishuConfig.app_secret" class="modal-field mt-2" type="password" placeholder="请输入新的 App Secret" autocomplete="new-password" /></label></template><template v-else><label class="modal-label mt-5">QQ 机器人 App ID <span>*</span><input v-model.trim="providerConfig.qq.app_id" class="modal-field mt-2" placeholder="例如：1903753507" autocomplete="off" /></label><p class="modal-help">QQ 开放平台创建机器人后生成的唯一标识。</p><label class="modal-label mt-5">QQ 机器人 App Secret <span>*</span><input v-model.trim="providerConfig.qq.app_secret" class="modal-field mt-2" type="password" placeholder="请输入新的 App Secret" autocomplete="new-password" /></label><p class="modal-help">与 App ID 配套的密钥，只用于换取 QQ 访问凭证，请勿分享。</p><label class="modal-label mt-5">机器人主页 / 邀请链接 <small>推荐</small><input v-model.trim="providerConfig.qq.bot_link" class="modal-field mt-2" type="url" placeholder="例如：https://q.qq.com/..." /></label><p class="modal-help">用于显示“打开 QQ 机器人”按钮，不参与消息发送。</p><label class="modal-label mt-5">消息 API 地址 <small>可选</small><input v-model.trim="providerConfig.qq.api_base" class="modal-field mt-2" placeholder="留空使用 https://api.bot.qq.com" /></label><p class="modal-help">一般留空，仅代理或兼容网关场景需要填写；获取访问凭证仍使用 QQ 官方地址。</p></template><div class="mt-7 flex justify-end gap-3"><button type="button" class="channel-button !flex-none" @click="botSetupChannel = ''">取消</button><button class="rounded-xl bg-brand-500 px-5 py-2 text-sm font-bold text-white disabled:opacity-50" :disabled="botSaveDisabled">{{ busy.endsWith('-config') ? '保存中…' : '保存新的凭证' }}</button></div></form></div></Teleport>
   </div>
 </template>
 
@@ -176,8 +207,8 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useAuthStore } from '../stores/auth'
 import Toast from '../components/Toast.vue'
 import {
-  bindChannel, createQQBindCode, getChannelStatuses, getNotificationBrand, saveFeishuProvider, saveNotificationBrand, saveProvider, testChannel, toggleChannel, unbindChannel,
-  type ChannelStatus, type ReminderChannel
+  bindChannel, createQQBindCode, getChannelStatuses, getNotificationBrand, saveFeishuProvider, saveNotificationBrand, saveProvider, testChannel, toggleChannel, unbindChannel, unbindChannelTarget,
+  type ChannelBindingItem, type ChannelStatus, type ReminderChannel
 } from '../api/reminder'
 
 const channels = ref<(ChannelStatus & { last_error_code?: string })[]>([])
@@ -197,6 +228,7 @@ const providerConfig = reactive({
 })
 const busy = ref('')
 const loading = ref(true)
+const loadError = ref('')
 const toast = reactive<{ message: string; type: 'success' | 'error' }>({ message: '', type: 'success' })
 const authStore = useAuthStore()
 const emailProviderTip = computed(() => ({ qq: 'QQ 邮箱：在“设置 → 账号”开启 POP3/SMTP 或 IMAP/SMTP 服务后生成授权码；系统将自动使用 smtp.qq.com:465。', 163: '163 邮箱：在“设置 → POP3/SMTP/IMAP”开启 SMTP 服务并生成客户端授权密码；系统将自动使用 smtp.163.com:465。', gmail: 'Gmail：请使用应用专用密码；系统将自动使用 smtp.gmail.com:465。', custom: '请向你的邮箱服务商确认 SMTP 服务器、端口和授权码。' } as Record<string, string>)[emailSetup.provider] || '')
@@ -209,7 +241,13 @@ async function load(quiet = false) {
   try {
     const res = await getChannelStatuses()
     channels.value = res.data.data || []
+    loadError.value = ''
     if (channels.value.find(item => item.channel === 'qq')?.bound) qqBindCode.value = ''
+  } catch (err: any) {
+    // 失败必须显式提示：此前这里没有 catch，渠道卡片会整片空白，用户以为
+    // 「渠道不显示」，无法区分真的没有渠道和接口坏了。
+    channels.value = []
+    if (!quiet) loadError.value = err.response?.data?.message || '读取通知方式失败，请重试'
   } finally { if (!quiet) loading.value = false }
 }
 async function loadBrand() {
@@ -234,8 +272,17 @@ async function bind(channel: ChannelStatus) {
     await bindChannel(channel.channel, targets[channel.channel] || '')
     targets[channel.channel] = ''
     await load()
-    show(`${channel.label}已绑定`)
+    show(channel.channel === 'email' ? '接收邮箱已添加' : `${channel.label}已绑定`)
   } catch (err: any) { show(err.response?.data?.message || '绑定失败', 'error') }
+  finally { busy.value = '' }
+}
+async function removeBinding(channel: ChannelStatus, binding: ChannelBindingItem) {
+  busy.value = `${channel.channel}-${binding.id}`
+  try {
+    await unbindChannelTarget(channel.channel, binding.id)
+    await load()
+    show('接收邮箱已删除')
+  } catch (err: any) { show(err.response?.data?.message || '删除失败', 'error') }
   finally { busy.value = '' }
 }
 async function configureFeishu() {
@@ -348,7 +395,7 @@ function icon(channel: ReminderChannel) {
 	    qq: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M8 9c0-4 1.8-6 4-6s4 2 4 6c0 1.5.5 3 1.5 4.5.8 1.2 1.2 2.4.5 3.5-.4.6-1 .8-1.8.7-.7 2-2.2 3.3-4.2 3.3s-3.5-1.3-4.2-3.3c-.8.1-1.4-.1-1.8-.7-.7-1.1-.3-2.3.5-3.5C7.5 12 8 10.5 8 9Z" stroke-width="1.7"/></svg>',
 	    dingtalk: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M5 5h14v10H9l-4 4V5Z" stroke-width="1.8" stroke-linejoin="round"/><path d="M8 9h8M8 12h5" stroke-width="1.8" stroke-linecap="round"/></svg>',
   }
-  return icons[channel]
+  return icons[channel] || icons.inapp
 }
 let qqRefreshTimer: number | undefined
 onMounted(async () => { await load(); await loadBrand(); qqRefreshTimer = window.setInterval(() => { if (qqBindCode.value) load(true) }, 3000) })
@@ -356,17 +403,17 @@ onBeforeUnmount(() => { if (qqRefreshTimer) window.clearInterval(qqRefreshTimer)
 </script>
 
 <style scoped>
-.channel-card { @apply rounded-[24px] border border-border/70 bg-surface/85 p-5 shadow-[0_16px_44px_-34px_rgba(15,23,42,.55)] backdrop-blur-xl transition hover:-translate-y-0.5 hover:border-brand-500/15; }
-.channel-icon { @apply flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl; }
-.channel-icon :deep(svg) { @apply h-6 w-6; }
+.channel-card { @apply rounded-[24px] border border-border/70 bg-surface/85 p-4 shadow-[0_16px_44px_-34px_rgba(15,23,42,.55)] backdrop-blur-xl transition hover:-translate-y-0.5 hover:border-brand-500/15 sm:p-5; }
+.channel-icon { @apply flex h-10 w-10 shrink-0 items-center justify-center rounded-xl sm:h-12 sm:w-12 sm:rounded-2xl; }
+.channel-icon :deep(svg) { @apply h-5 w-5 sm:h-6 sm:w-6; }
 .channel-icon.inapp { @apply bg-blue-500/10 text-blue-500; }.channel-icon.email { @apply bg-violet-500/10 text-violet-500; }.channel-icon.sms { @apply bg-amber-500/10 text-amber-500; }.channel-icon.feishu { @apply bg-cyan-500/10 text-cyan-500; }.channel-icon.qq { @apply bg-rose-500/10 text-rose-500; }.channel-icon.dingtalk { @apply bg-sky-500/10 text-sky-500; }
 .status-pill { @apply rounded-full px-2 py-0.5 text-[9px] font-extrabold; }.status-pill.success { @apply bg-emerald-500/10 text-emerald-500; }.status-pill.warning { @apply bg-amber-500/10 text-amber-500; }.status-pill.muted { @apply bg-muted text-muted-foreground; }
 .toggle { @apply relative h-7 w-12 shrink-0 rounded-full bg-muted transition; }.toggle span { @apply absolute left-1 top-1 h-5 w-5 rounded-full bg-white shadow transition; }.toggle.on { @apply bg-emerald-500; }.toggle.on span { transform: translateX(20px); }
-.bind-input { @apply h-11 min-w-0 flex-1 rounded-2xl border border-border bg-surface px-3.5 text-sm outline-none focus:border-brand-500/40 focus:ring-4 focus:ring-brand-500/10; }
-.bind-button { @apply h-11 rounded-2xl bg-brand-500 px-4 text-sm font-bold text-white disabled:opacity-50; }
+.bind-input { @apply h-10 min-w-0 flex-1 rounded-xl border border-border bg-surface px-3.5 text-sm outline-none focus:border-brand-500/40 focus:ring-4 focus:ring-brand-500/10 sm:h-11 sm:rounded-2xl; }
+.bind-button { @apply h-10 rounded-xl bg-brand-500 px-4 text-sm font-bold text-white disabled:opacity-50 sm:h-11 sm:rounded-2xl; }
 .channel-button { @apply flex-1 rounded-xl border border-border bg-surface px-3 py-2 text-xs font-bold text-foreground transition hover:bg-muted disabled:opacity-45; }.channel-button.primary { @apply border-brand-500/20 bg-brand-500/10 text-brand-600 dark:text-brand-300; }.channel-button.danger { @apply text-rose-500; }
-.provider-form { @apply mt-5 rounded-2xl border border-violet-500/15 bg-violet-500/[.05] p-4; }.provider-help { @apply mt-1 text-xs leading-5 text-muted-foreground; }
+.provider-form { @apply mt-4 rounded-2xl border border-violet-500/15 bg-violet-500/[.05] p-4 sm:mt-5; }.provider-help { @apply mt-1 text-xs leading-5 text-muted-foreground; }
 .provider-field { @apply block; }.provider-field-label { @apply flex items-center gap-2 text-xs font-bold text-foreground; }.provider-badge { @apply rounded-full px-1.5 py-0.5 text-[9px] font-bold; }.provider-badge.required { @apply bg-rose-500/10 text-rose-500; }.provider-badge.recommended { @apply bg-emerald-500/10 text-emerald-600 dark:text-emerald-300; }.provider-badge.optional { @apply bg-muted text-muted-foreground; }.provider-field-help { @apply mt-1 text-[11px] leading-4 text-muted-foreground; }
-.modal-label { @apply block text-sm font-bold text-foreground; }.modal-label span { @apply text-rose-500; }.modal-label small { @apply ml-1 text-xs font-medium text-muted-foreground; }.modal-field { @apply h-12 w-full rounded-2xl border border-border bg-surface px-4 text-sm font-normal outline-none focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10; }
+.modal-label { @apply block text-sm font-bold text-foreground; }.modal-label span { @apply text-rose-500; }.modal-label small { @apply ml-1 text-xs font-medium text-muted-foreground; }.modal-field { @apply h-11 w-full rounded-xl border border-border bg-surface px-3.5 text-sm font-normal outline-none focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10 sm:h-12 sm:rounded-2xl sm:px-4; }
 .modal-help { @apply mt-1 text-[11px] leading-4 text-muted-foreground; }
 </style>

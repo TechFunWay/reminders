@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"smallgo/server/lunar"
 	"smallgo/server/response"
 
 	"github.com/gin-gonic/gin"
@@ -18,6 +19,7 @@ func setupAuthRoutes(api *gin.RouterGroup, db *gorm.DB) {
 
 	group.GET("/summary", handleSummary(db))
 	group.GET("/events", handleRealtimeEvents())
+	group.GET("/revision", handleRevision())
 	group.GET("/lists", handleListLists(db))
 	group.POST("/lists", handleCreateList(db))
 	group.PATCH("/lists/:id", handleUpdateList(db))
@@ -38,11 +40,20 @@ func setupAuthRoutes(api *gin.RouterGroup, db *gorm.DB) {
 	group.POST("/notifications/read-all", handleReadAllNotifications(db))
 
 	group.GET("/channels", handleChannelStatuses(db))
+	group.GET("/lunar", handleLunarCalendar(db))
+	group.GET("/lunar/convert", handleLunarConvert(db))
 	group.PUT("/channels/:channel", handleBindChannel(db))
 	group.PATCH("/channels/:channel", handleToggleChannel(db))
 	group.DELETE("/channels/:channel", handleUnbindChannel(db))
+	group.DELETE("/channels/:channel/bindings/:id", handleDeleteChannelBinding(db))
 	group.POST("/channels/:channel/test", handleTestChannel(db))
 	group.POST("/channels/qq/bind-code", handleCreateQQBindCode(db))
+}
+
+// originClientID 是发起这次请求的浏览器标签页标识（前端每个标签页生成一个，随请求
+// 与 SSE 连接一起带上）。广播数据变更时用它跳过发起者自己。
+func originClientID(c *gin.Context) string {
+	return strings.TrimSpace(c.GetHeader("X-Client-Id"))
 }
 
 func setupAdminRoutes(api *gin.RouterGroup, db *gorm.DB) {
@@ -160,6 +171,7 @@ func handleCreateList(db *gorm.DB) gin.HandlerFunc {
 			response.ErrorInternal(c, "创建清单失败")
 			return
 		}
+		publishDataChanged(list.UserID, "list", "created", list.ID, originClientID(c))
 		response.Success(c, list)
 	}
 }
@@ -203,6 +215,7 @@ func handleUpdateList(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 		db.First(&list, id)
+		publishDataChanged(list.UserID, "list", "updated", list.ID, originClientID(c))
 		response.Success(c, list)
 	}
 }
@@ -236,6 +249,9 @@ func handleDeleteList(db *gorm.DB) gin.HandlerFunc {
 			writeServiceError(c, err)
 			return
 		}
+		// 删清单会把清单里的提醒挪到默认清单，所以提醒列表也得跟着刷。
+		publishDataChanged(userID, "list", "deleted", id, originClientID(c))
+		publishDataChanged(userID, "reminder", "moved", 0, originClientID(c))
 		response.Success(c, gin.H{"deleted": true})
 	}
 }
@@ -284,6 +300,7 @@ func handleCreateReminder(db *gorm.DB) gin.HandlerFunc {
 			writeServiceError(c, err)
 			return
 		}
+		publishDataChanged(item.UserID, "reminder", "created", item.ID, originClientID(c))
 		response.Success(c, item)
 	}
 }
@@ -304,6 +321,7 @@ func handleUpdateReminder(db *gorm.DB) gin.HandlerFunc {
 			writeServiceError(c, err)
 			return
 		}
+		publishDataChanged(item.UserID, "reminder", "updated", item.ID, originClientID(c))
 		response.Success(c, item)
 	}
 }
@@ -318,6 +336,7 @@ func handleDeleteReminder(db *gorm.DB) gin.HandlerFunc {
 			writeServiceError(c, err)
 			return
 		}
+		publishDataChanged(currentUserID(c), "reminder", "deleted", id, originClientID(c))
 		response.Success(c, gin.H{"deleted": true})
 	}
 }
@@ -333,6 +352,7 @@ func handleCompleteReminder(db *gorm.DB) gin.HandlerFunc {
 			writeServiceError(c, err)
 			return
 		}
+		publishDataChanged(item.UserID, "reminder", "completed", item.ID, originClientID(c))
 		response.Success(c, item)
 	}
 }
@@ -348,6 +368,7 @@ func handleRestoreReminder(db *gorm.DB) gin.HandlerFunc {
 			writeServiceError(c, err)
 			return
 		}
+		publishDataChanged(item.UserID, "reminder", "restored", item.ID, originClientID(c))
 		response.Success(c, item)
 	}
 }
@@ -370,7 +391,111 @@ func handleSnoozeReminder(db *gorm.DB) gin.HandlerFunc {
 			writeServiceError(c, err)
 			return
 		}
+		publishDataChanged(item.UserID, "reminder", "snoozed", item.ID, originClientID(c))
 		response.Success(c, item)
+	}
+}
+
+func handleLunarCalendar(db *gorm.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		loc := shanghai()
+		now := time.Now().In(loc)
+		year := now.Year()
+		month := int(now.Month())
+		if raw := c.Query("year"); raw != "" {
+			if n, err := strconv.Atoi(raw); err == nil {
+				year = n
+			}
+		}
+		if raw := c.Query("month"); raw != "" {
+			if n, err := strconv.Atoi(raw); err == nil && n >= 1 && n <= 12 {
+				month = n
+			}
+		}
+		if year < 1901 || year > 2099 {
+			response.ErrorBadRequest(c, "仅支持 1901–2099 年的农历")
+			return
+		}
+		cells, err := lunar.CalendarMonth(year, time.Month(month), loc)
+		if err != nil {
+			response.ErrorBadRequest(c, "农历数据不可用")
+			return
+		}
+		response.Success(c, gin.H{
+			"year":  year,
+			"month": month,
+			"days":  cells,
+		})
+	}
+}
+
+// handleLunarConvert answers bidirectional lunar↔solar lookups for the date
+// picker's calendar tabs:
+//
+//	GET /api/reminder/lunar/convert?year=2026&month=9&day=25
+//	  → the lunar date of that Gregorian day (lunar_month negative = leap),
+//	    plus the ganzhi/zodiac year label.
+//	GET /api/reminder/lunar/convert?lunar_year=2026&lunar_month=8&lunar_day=15
+//	  → the Gregorian date of that lunar day (30 clamps to the month end;
+//	    a leap month with no counterpart in the year falls back to the
+//	    regular month).
+func handleLunarConvert(db *gorm.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		loc := shanghai()
+		if c.Query("lunar_year") != "" {
+			ly, err1 := strconv.Atoi(c.Query("lunar_year"))
+			lm, err2 := strconv.Atoi(c.Query("lunar_month"))
+			ld, err3 := strconv.Atoi(c.Query("lunar_day"))
+			if err1 != nil || err2 != nil || err3 != nil || ly < 1901 || ly > 2099 {
+				response.ErrorBadRequest(c, "农历日期参数无效")
+				return
+			}
+			absMonth := lm
+			if absMonth < 0 {
+				absMonth = -absMonth
+			}
+			if absMonth < 1 || absMonth > 12 || ld < 1 || ld > 30 {
+				response.ErrorBadRequest(c, "农历日期参数无效")
+				return
+			}
+			solar, err := lunar.ToSolar(ly, lm, ld, loc)
+			if err != nil {
+				response.ErrorBadRequest(c, "农历日期不可用")
+				return
+			}
+			converted := lunar.FromTime(solar)
+			response.Success(c, gin.H{
+				"lunar_year":      converted.Year,
+				"lunar_month":     converted.Month,
+				"lunar_day":       converted.Day,
+				"lunar_year_name": lunar.YearName(ly),
+				"year":            solar.Year(),
+				"month":           int(solar.Month()),
+				"day":             solar.Day(),
+			})
+			return
+		}
+		y, err1 := strconv.Atoi(c.Query("year"))
+		m, err2 := strconv.Atoi(c.Query("month"))
+		d, err3 := strconv.Atoi(c.Query("day"))
+		if err1 != nil || err2 != nil || err3 != nil {
+			response.ErrorBadRequest(c, "日期参数无效")
+			return
+		}
+		if y < 1901 || y > 2099 || m < 1 || m > 12 || d < 1 || d > 31 {
+			response.ErrorBadRequest(c, "日期参数无效")
+			return
+		}
+		converted := lunar.FromTime(time.Date(y, time.Month(m), d, 12, 0, 0, 0, loc))
+		response.Success(c, gin.H{
+			"lunar_year":      converted.Year,
+			"lunar_month":     converted.Month,
+			"lunar_day":       converted.Day,
+			"lunar_year_name": lunar.YearName(converted.Year),
+			"year":            y,
+			"month":           m,
+			"day":             d,
+		})
 	}
 }
 
@@ -454,6 +579,7 @@ func handleReadNotification(db *gorm.DB) gin.HandlerFunc {
 			response.Error(c, http.StatusNotFound, response.CodeNotFound, "通知不存在")
 			return
 		}
+		publishDataChanged(currentUserID(c), "notification", "read", id, originClientID(c))
 		response.Success(c, gin.H{"read": true})
 	}
 }
@@ -465,6 +591,7 @@ func handleReadAllNotifications(db *gorm.DB) gin.HandlerFunc {
 			response.ErrorInternal(c, "更新通知失败")
 			return
 		}
+		publishDataChanged(currentUserID(c), "notification", "read-all", 0, originClientID(c))
 		response.Success(c, gin.H{"read": true})
 	}
 }

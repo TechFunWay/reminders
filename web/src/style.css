@@ -7,6 +7,12 @@
 html {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* 安卓 Chrome 会把系统"大字体"缩放套到网页文字上，布局按 CSS 像素验证
+     的结果在真机上会被撑大折行；钉住 100% 让真机渲染与设计一致。 */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  /* Tailwind preflight 默认 1.5，中文界面下显得松散；收到 1.45 接近原生 App。 */
+  line-height: 1.45;
 }
 
 body {
@@ -73,33 +79,41 @@ textarea {
     @apply bg-surface/90 dark:bg-surface/70 backdrop-blur-xl border border-border shadow-card;
   }
 
+  /* 弹窗专用不透明表面：移动端禁用了 backdrop-blur（见上方媒体查询），
+     半透明表面叠在明亮内容（如收款码）上会直接透底、无法阅读，
+     因此浮层弹窗必须用不透明背景。 */
+  .surface-modal {
+    @apply bg-surface border border-border shadow-card;
+  }
+
   /* Primary brand button — `bg-brand-gradient` is already var-driven in
-     tailwind.config so swapping the brand CSS variables reskins this. */
+     tailwind.config so swapping the brand CSS variables reskins this.
+     移动端先收紧内边距，sm 起恢复桌面尺寸。 */
   .btn-brand {
-    @apply inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-brand-gradient text-white text-sm font-semibold shadow-glow hover:brightness-110 active:scale-[0.98] disabled:opacity-60 disabled:pointer-events-none transition-all;
+    @apply inline-flex items-center justify-center gap-2 px-3.5 py-2 rounded-xl bg-brand-gradient text-white text-sm font-semibold shadow-glow hover:brightness-110 active:scale-[0.98] disabled:opacity-60 disabled:pointer-events-none transition-all sm:px-4 sm:py-2.5;
   }
 
   .btn-ghost {
-    @apply inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium text-foreground bg-surface/70 dark:bg-surface/5 border border-border hover:bg-surface dark:hover:bg-surface/10 active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none transition-all;
+    @apply inline-flex items-center justify-center gap-2 px-3.5 py-2 rounded-xl text-sm font-medium text-foreground bg-surface/70 dark:bg-surface/5 border border-border hover:bg-surface dark:hover:bg-surface/10 active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none transition-all sm:px-4 sm:py-2.5;
   }
 
   .input-field {
-    @apply w-full px-4 py-2.5 rounded-xl border border-input bg-surface/80 dark:bg-surface/5 text-foreground placeholder-muted-foreground focus:ring-4 focus:ring-brand-500/15 focus:border-brand-500 outline-none transition-all;
+    @apply w-full px-3 py-2 rounded-xl border border-input bg-surface/80 dark:bg-surface/5 text-foreground placeholder-muted-foreground focus:ring-4 focus:ring-brand-500/15 focus:border-brand-500 outline-none transition-all sm:px-4 sm:py-2.5;
   }
 
   .badge {
-    @apply inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-full;
+    @apply inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full sm:px-2.5 sm:py-1;
   }
 
   /* Page-level container — uses the full available width so authenticated
      views (especially tables) don't waste space once a sidebar is present. */
   .page-container {
-    @apply w-full space-y-6;
+    @apply w-full space-y-4 sm:space-y-6;
   }
 
   /* Premium gradient button with a light sweep on hover */
   .btn-premium {
-    @apply relative overflow-hidden w-full py-3 px-4 rounded-xl bg-brand-gradient text-white font-semibold shadow-glow active:scale-[0.98] disabled:opacity-60 disabled:pointer-events-none transition-all flex items-center justify-center gap-2;
+    @apply relative overflow-hidden w-full py-2.5 sm:py-3 px-4 rounded-xl bg-brand-gradient text-white font-semibold shadow-glow active:scale-[0.98] disabled:opacity-60 disabled:pointer-events-none transition-all flex items-center justify-center gap-2;
   }
   .btn-premium::after {
     content: '';

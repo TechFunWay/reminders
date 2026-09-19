@@ -125,24 +125,33 @@
           <p class="text-[11px] font-bold uppercase tracking-[0.18em] text-muted-foreground">{{ dayLabel }}</p>
           <h2 class="truncate text-base font-bold">{{ greeting }}，{{ authStore.user?.username }}</h2>
         </div>
-        <div class="ml-auto flex items-center gap-2">
+        <div class="ml-auto flex items-center gap-1 sm:gap-2">
           <RouterLink to="/admin/notifications" class="icon-button relative" aria-label="通知中心">
             <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9ZM10 21h4" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
             <span v-if="summary.unread" class="absolute right-1 top-1 h-2.5 w-2.5 rounded-full border-2 border-surface bg-red-500"></span>
           </RouterLink>
           <UiThemeToggle />
-          <div class="mx-1 h-7 w-px bg-border"></div>
+          <div class="mx-1 hidden h-7 w-px bg-border sm:block"></div>
           <RouterLink to="/admin/profile" class="flex items-center gap-2 rounded-xl p-1.5 pr-2 hover:bg-muted">
             <span class="avatar">{{ userInitial }}</span>
             <span class="hidden text-sm font-semibold md:block">{{ authStore.user?.username }}</span>
           </RouterLink>
-          <button class="icon-button" aria-label="退出登录" @click="logout">
+          <button class="icon-button !hidden sm:!flex" aria-label="退出登录" @click="logout">
             <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor"><path d="m15 17 5-5-5-5M20 12H9m2 8H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h6" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </button>
         </div>
       </header>
 
-      <main class="px-4 pb-28 pt-4 sm:px-6 sm:pt-6 lg:px-8 lg:pb-10 xl:px-10">
+      <main class="px-4 pb-[calc(4.25rem+env(safe-area-inset-bottom))] pt-2.5 sm:px-6 sm:pt-6 lg:px-8 lg:pb-10 xl:px-10">
+        <!-- 赞赏横幅：管理员可见；关闭不持久化，刷新后再次出现；
+             支持过当前版本后隐藏，应用升级到新版本后再次出现 -->
+        <div v-if="supportStore.bannerVisible" class="mb-3 flex items-center justify-between gap-2 rounded-xl border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs sm:mb-3 sm:rounded-2xl sm:px-4 sm:py-3 sm:text-sm">
+          <span class="min-w-0 truncate text-foreground">
+            ❤ <button class="font-semibold text-brand-600 hover:underline dark:text-brand-300" @click="supportStore.open()">请作者喝杯咖啡</button><span class="hidden sm:inline"> 如果这个应用对你有帮助，欢迎（不赞赏不影响任何功能）。</span>
+          </span>
+          <button class="shrink-0 px-1 text-lg leading-none text-muted-foreground hover:text-foreground" title="关闭" aria-label="关闭赞赏横幅" @click="supportStore.dismissBanner()">×</button>
+        </div>
+
         <RouterView v-slot="{ Component }">
           <Transition name="page" mode="out-in">
             <component :is="Component" />
@@ -151,15 +160,32 @@
       </main>
     </div>
 
-    <nav class="mobile-tabbar">
+    <nav class="mobile-tabbar" :class="{ 'mobile-tabbar-hidden': keyboardOpen }">
       <RouterLink to="/admin" class="mobile-tab" :class="{ active: route.path === '/admin' }"><span v-html="smartNav[0].icon"></span><small>今天</small></RouterLink>
       <RouterLink to="/admin/planned" class="mobile-tab" :class="{ active: route.path === '/admin/planned' }"><span v-html="smartNav[1].icon"></span><small>计划</small></RouterLink>
-      <button class="mobile-add" aria-label="新建提醒" @click="openQuickAdd"><svg viewBox="0 0 24 24" class="h-7 w-7" fill="none" stroke="currentColor"><path d="M12 5v14M5 12h14" stroke-width="2.2" stroke-linecap="round"/></svg></button>
+      <button class="mobile-add" aria-label="新建提醒" @click="openQuickAdd"><svg viewBox="0 0 24 24" class="h-6 w-6" fill="none" stroke="currentColor"><path d="M12 5v14M5 12h14" stroke-width="2.2" stroke-linecap="round"/></svg></button>
       <RouterLink to="/admin/notifications" class="mobile-tab" :class="{ active: route.path === '/admin/notifications' }"><span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9ZM10 21h4" stroke-width="1.8" stroke-linecap="round"/></svg></span><small>通知</small></RouterLink>
       <RouterLink to="/admin/channels" class="mobile-tab" :class="{ active: route.path === '/admin/channels' }"><span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M8 12h8m-8 4h5m6-11H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h4l3 3 3-3h4a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2Z" stroke-width="1.8"/></svg></span><small>方式</small></RouterLink>
     </nav>
 
     <Toast :message="realtimeToast" type="success" :duration="5000" />
+
+    <!-- 站内提醒弹窗：PC 与手机一致，必须处理完才消失 -->
+    <ReminderAlert
+      :open="!!currentAlert"
+      :title="currentAlert?.title || ''"
+      :body="currentAlert?.body || ''"
+      :created-at="currentAlert?.createdAt || ''"
+      :pending-count="pendingAlertCount"
+      :busy="alertBusy"
+      :error="alertError"
+      @complete="completeCurrentAlert"
+      @snooze="snoozeCurrentAlert"
+      @dismiss="dismissCurrentAlert"
+    />
+
+    <!-- 赞赏支持弹窗 -->
+    <SupportModal />
   </div>
 </template>
 
@@ -167,15 +193,30 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import Toast from '../components/Toast.vue'
+import SupportModal from '../components/SupportModal.vue'
 import UiThemeToggle from '../components/ui/ThemeToggle.vue'
+import ReminderAlert from '../components/ReminderAlert.vue'
 import { useAuthStore } from '../stores/auth'
-import { createList, getLists, getSummary, type ReminderList } from '../api/reminder'
+import { useSupportStore } from '../stores/support'
+import {
+  completeReminder,
+  createList,
+  getLists,
+  getNotifications,
+  getRevision,
+  getSummary,
+  markNotificationRead,
+  snoozeReminder,
+  type ReminderList,
+} from '../api/reminder'
 import { getVersion } from '../api/config'
-import { connectReminderEvents, type ReminderRealtimeEvent } from '../services/reminderRealtime'
+import { connectReminderEvents, type RealtimeNotification, type ReminderRealtimeEvent } from '../services/reminderRealtime'
+import { onFnOSGatewayOrigin } from '../utils/gateway'
 
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
+const supportStore = useSupportStore()
 const mobileOpen = ref(false)
 const lists = ref<ReminderList[]>([])
 const summary = ref<Record<string, number>>({})
@@ -253,13 +294,25 @@ async function loadVersion() {
     const info = res.data?.data
     appVersion.value = info?.version || ''
     appBuildTime.value = info?.buildTime || ''
-  } catch { /* a version label must never block the main application */ }
+    // 赞赏提示需要版本号与本次运行标识，复用这次请求避免重复拉取。
+    if (authStore.isAdmin) await supportStore.init(true, info)
+  } catch {
+    /* a version label must never block the main application */
+    if (authStore.isAdmin) await supportStore.init(true)
+  }
 }
 function logout() {
   stopRealtime?.()
-  authStore.logout()
+  // 服务端要先记下「主动登出」才轮得到清本地：网关域上只清前端会被网关注入的
+  // NAS 身份立刻认回来，那正是用户报的「退不出去」（见 stores/auth.ts）。
+  void authStore.endSession()
   router.push('/login')
 }
+
+// 飞牛授权只是身份来源，应用自己的登录态永远可以独立退出——网关域上也一样。
+// 唯一需要跟随 NAS 的情况是「用户没在本应用显式登录过、当前登录态完全由网关
+// 注入身份撑着」（authStore.followsFnOSSession），那时 NAS 一退出应用也就无法
+// 再被认证，页面会自动回到登录页。
 
 let stopRealtime: (() => void) | undefined
 let audioContext: AudioContext | undefined
@@ -291,38 +344,237 @@ function playReminderSound() {
   })
 }
 
+// 站内提醒弹窗队列：提醒到点可能一次来好几条（多个提醒同一分钟到期），排队逐条
+// 处理，处理完一条自动上下一条。用 notification id 去重，避免重连后重复入队。
+interface DueAlert {
+  notificationID: number
+  reminderID?: number
+  title: string
+  body: string
+  createdAt: string
+}
+
+const alertQueue = ref<DueAlert[]>([])
+const alertBusy = ref(false)
+const alertError = ref('')
+const currentAlert = computed(() => alertQueue.value[0] || null)
+const pendingAlertCount = computed(() => Math.max(alertQueue.value.length - 1, 0))
+const SNOOZE_MINUTES = 10
+
+function enqueueDueAlert(notification: ReminderRealtimeEvent['notification']) {
+  if (!notification || notification.type !== 'reminder_due') return
+  if (alertQueue.value.some(item => item.notificationID === notification.id)) return
+  alertQueue.value.push({
+    notificationID: notification.id,
+    reminderID: notification.reminder_id,
+    title: notification.title,
+    body: notification.body,
+    createdAt: notification.created_at,
+  })
+}
+
+function shiftAlert() {
+  alertQueue.value.shift()
+  alertError.value = ''
+}
+
+// 弹窗上的「完成 / 稍后提醒」都要改动提醒本身，因此除了跟进队列，还得让列表刷新；
+// 服务端会把这次变更广播给同一账号的其它设备（本标签页被排除，自己手动刷）。
+async function runAlertAction(action: () => Promise<unknown>) {
+  if (alertBusy.value) return
+  alertBusy.value = true
+  alertError.value = ''
+  try {
+    await action()
+    await acknowledgeCurrentAlert()
+    shiftAlert()
+    refreshNavigation()
+    window.dispatchEvent(new CustomEvent('reminder-data-changed'))
+  } catch (error: any) {
+    alertError.value = error?.response?.data?.message || '操作失败，请重试'
+  } finally {
+    alertBusy.value = false
+  }
+}
+
+// 处理过的站内提醒标记为已读，未读小红点才会跟着消失。
+async function acknowledgeCurrentAlert() {
+  const alert = currentAlert.value
+  if (!alert) return
+  try {
+    await markNotificationRead(alert.notificationID)
+  } catch {
+    // 已读只是角标状态，失败不该拦住「完成 / 稍后提醒」这类主操作。
+  }
+}
+
+function completeCurrentAlert() {
+  const alert = currentAlert.value
+  if (!alert) return
+  void runAlertAction(async () => {
+    if (alert.reminderID) await completeReminder(alert.reminderID)
+  })
+}
+
+function snoozeCurrentAlert() {
+  const alert = currentAlert.value
+  if (!alert) return
+  void runAlertAction(async () => {
+    if (!alert.reminderID) return
+    const until = new Date(Date.now() + SNOOZE_MINUTES * 60_000).toISOString()
+    await snoozeReminder(alert.reminderID, until)
+  })
+}
+
+function dismissCurrentAlert() {
+  if (alertBusy.value) return
+  void (async () => {
+    await acknowledgeCurrentAlert()
+    shiftAlert()
+    refreshNavigation()
+  })()
+}
+
 function handleRealtimeEvent(event: ReminderRealtimeEvent) {
+  // 数据变更（别的设备/窗口增删改了提醒、清单、通知、渠道）：本机不重新拉数据就会
+  // 一直显示旧内容，这正是「手机端加了，PC 端看不到」的原因。
+  if (event.type === 'reminders.changed') {
+    lastRevision = event.revision ?? lastRevision
+    refreshNavigation()
+    window.dispatchEvent(new CustomEvent('reminder-realtime', { detail: event }))
+    window.dispatchEvent(new CustomEvent('reminder-data-changed'))
+    return
+  }
+
   if (event.type !== 'notification.created' || !event.notification) return
+  if (event.revision) lastRevision = event.revision
   window.dispatchEvent(new CustomEvent('reminder-realtime', { detail: event }))
   window.dispatchEvent(new CustomEvent('reminder-data-changed'))
+  // 站内提醒：手机端也能看到的弹窗（toast 在小屏上太容易被忽略，也容易被底部
+  // 标签栏挡住）。其它类型（例如渠道投递失败）继续保持轻量的 toast。
+  if (event.notification.type === 'reminder_due') {
+    enqueueDueAlert(event.notification)
+    realtimeToast.value = ''
+    playReminderSound()
+    return
+  }
   realtimeToast.value = ''
   setTimeout(() => {
-    realtimeToast.value = event.notification?.type === 'channel_failed'
-      ? event.notification.title
-      : `提醒：${event.notification?.title || ''}`
+    realtimeToast.value = event.notification?.title || ''
   }, 0)
-  if (event.notification.type === 'reminder_due') playReminderSound()
+}
+
+// 补弹错过的到点提醒。到点弹窗的唯一触发源本来是长连接推送的 notification.created
+// 事件，但那条路要穿过飞牛统一网关的代理，响应被缓冲、手机切后台连接被系统掐断、
+// 服务端重启，任何一种都会让事件丢掉——通知明明写进了通知中心，弹窗却永远不出现，
+// 这正是「到时间了没有提示」。所以在修订号变化（以及刚进入应用）时拉一遍通知，
+// 把还没处理的到点通知补进弹窗队列：弹窗上的三个操作（完成 / 稍后提醒 / 知道了）
+// 都会把通知标为已读，处理过的不会再弹，未读的迟早要弹，正好符合“提醒必须被处理”。
+const ALERT_RECOVERY_WINDOW_MS = 60 * 60 * 1000
+// 页面打开前 60 分钟内到点且仍未读的也补弹：此刻打开应用，就该看到刚刚错过的提醒；
+// 更早的留给通知中心的未读角标，避免离开几天回来被一屏旧弹窗轰炸。
+const alertRecoverySince = new Date(Date.now() - ALERT_RECOVERY_WINDOW_MS)
+
+async function recoverMissedAlerts() {
+  try {
+    const res = await getNotifications()
+    const items = (res.data?.data || []) as RealtimeNotification[]
+    let added = 0
+    for (const item of items) {
+      if (item.type !== 'reminder_due' || item.read_at) continue
+      if (new Date(item.created_at).getTime() < alertRecoverySince.getTime()) continue
+      const before = alertQueue.value.length
+      enqueueDueAlert(item)
+      added += alertQueue.value.length - before
+    }
+    if (added > 0) playReminderSound()
+  } catch {
+    // 拉取失败不拦主流程，下一次修订号变化还会再试。
+  }
+}
+
+// 修订号轮询兜底：SSE 长连接要穿过飞牛统一网关那层代理，万一响应被代理缓冲，
+// 事件就迟迟到不了前端。这里定时问一次「服务端的数据版本变了吗」，变了就重新
+// 拉一遍——不依赖长连接一定通畅，「另一台设备改过了这边自动跟上」都能成立。
+const REVISION_POLL_MS = 20000
+let lastRevision = 0
+let revisionTimer: number | undefined
+
+async function pollRevision() {
+  if (document.visibilityState !== 'visible' || !authStore.isAuthenticated) return
+  try {
+    const res = await getRevision()
+    if (res.data?.code !== 0) return
+    const revision = Number(res.data.data?.revision || 0)
+    if (revision === lastRevision) return
+    lastRevision = revision
+    refreshNavigation()
+    // 修订号变了说明服务端发生过事件，长连接没送到的到点通知在这里补弹。
+    void recoverMissedAlerts()
+    window.dispatchEvent(new CustomEvent('reminder-realtime-resume'))
+    window.dispatchEvent(new CustomEvent('reminder-data-changed'))
+  } catch {
+    // 轮询失败什么都不用做：下一次再问。
+  }
 }
 
 function refreshWhenVisible() {
   if (document.visibilityState === 'visible') {
     refreshNavigation()
     window.dispatchEvent(new CustomEvent('reminder-realtime-resume'))
+    // 回到前台时立刻核一次：手机端常见路径是切到飞牛 App 退出登录再切回来，
+    // 等下一次轮询太慢，回来这一下就该已经回登录页了。
+    void checkFnOSSession()
+    // 另一台设备在后台期间改过数据，回到前台要立刻跟上，不等下一次轮询。
+    void pollRevision()
   }
+}
+
+// NAS 侧退出登录后把应用一并登出（见 stores/auth.ts 的 dropIfFnOSSessionGone）。
+// 服务端拒绝一切请求是兜底，但用户停在已登录界面上会一直看着报错，所以主动
+// 定期核一次；只在会话确实归属 NAS 时才会真正发请求。
+const FNOS_SESSION_POLL_MS = 45000
+let fnosSessionTimer: number | undefined
+
+async function checkFnOSSession() {
+  if (await authStore.dropIfFnOSSessionGone()) {
+    stopRealtime?.()
+    router.push('/login')
+  }
+}
+
+// 手机端键盘弹出时浏览器会压缩可视视口，fixed 定位的底部标签栏会跟着浮到
+// 键盘上方、盖住正在输入的框。用 visualViewport 检测键盘（可视高度比布局
+// 视口矮一大截即视为键盘弹出），弹出期间隐藏标签栏，收起后恢复。
+const keyboardOpen = ref(false)
+function syncKeyboardState() {
+  const vv = window.visualViewport
+  keyboardOpen.value = !!vv && window.innerHeight - vv.height > 120
 }
 
 onMounted(() => {
   refreshNavigation()
   loadVersion()
+  window.visualViewport?.addEventListener('resize', syncKeyboardState)
   window.addEventListener('reminder-data-changed', refreshNavigation)
   document.addEventListener('pointerdown', unlockReminderSound, { once: true })
   document.addEventListener('keydown', unlockReminderSound, { once: true })
   document.addEventListener('visibilitychange', refreshWhenVisible)
-  if (authStore.token) stopRealtime = connectReminderEvents(authStore.token, handleRealtimeEvent)
+  // 网关域上没有本地 JWT 也要连：那条路的身份来自网关注入的 X-Trim-*。
+  if (authStore.token || onFnOSGatewayOrigin()) stopRealtime = connectReminderEvents(authStore.token, handleRealtimeEvent)
+  fnosSessionTimer = window.setInterval(() => { void checkFnOSSession() }, FNOS_SESSION_POLL_MS)
+  // 先问一次当前修订号作为基准，之后只处理「变了」的情况（见 pollRevision）。
+  void pollRevision()
+  // 进门先补一遍：应用没开着的时候到点且还没处理的提醒，打开就该看到。
+  void recoverMissedAlerts()
+  revisionTimer = window.setInterval(() => { void pollRevision() }, REVISION_POLL_MS)
 })
 onBeforeUnmount(() => {
   stopRealtime?.()
+  if (fnosSessionTimer !== undefined) window.clearInterval(fnosSessionTimer)
+  if (revisionTimer !== undefined) window.clearInterval(revisionTimer)
   audioContext?.close()
+  window.visualViewport?.removeEventListener('resize', syncKeyboardState)
   window.removeEventListener('reminder-data-changed', refreshNavigation)
   document.removeEventListener('pointerdown', unlockReminderSound)
   document.removeEventListener('keydown', unlockReminderSound)
@@ -348,15 +600,16 @@ onBeforeUnmount(() => {
 .nav-count { @apply min-w-6 rounded-full bg-muted px-1.5 py-0.5 text-center text-[10px] font-bold text-muted-foreground; }
 .tiny-add { @apply flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground; }
 .sub-link { @apply ml-11 block rounded-lg px-3 py-2 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground; }
-.topbar { @apply sticky top-0 z-30 flex h-[76px] items-center border-b border-border/70 bg-background/75 px-4 backdrop-blur-xl sm:px-6 lg:px-8 xl:px-10; }
-.icon-button { @apply flex h-10 w-10 items-center justify-center rounded-xl text-muted-foreground transition hover:bg-muted hover:text-foreground; }
-.avatar { @apply flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-sky-400 to-indigo-500 text-sm font-extrabold text-white shadow-sm; }
-.mobile-tabbar { @apply fixed inset-x-3 bottom-3 z-40 flex h-16 items-center justify-around rounded-[22px] border border-white/30 bg-surface/90 px-2 shadow-[0_18px_50px_-18px_rgba(15,23,42,.45)] backdrop-blur-2xl lg:hidden; }
+.topbar { @apply sticky top-0 z-30 flex h-12 items-center border-b border-border/70 bg-background/75 px-3.5 backdrop-blur-xl sm:h-16 sm:px-6 lg:h-[76px] lg:px-8 xl:px-10; }
+.icon-button { @apply flex h-9 w-9 items-center justify-center rounded-xl text-muted-foreground transition hover:bg-muted hover:text-foreground sm:h-10 sm:w-10; }
+.avatar { @apply flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-br from-sky-400 to-indigo-500 text-sm font-extrabold text-white shadow-sm sm:h-9 sm:w-9; }
+.mobile-tabbar { @apply fixed inset-x-2 bottom-[calc(0.5rem+env(safe-area-inset-bottom))] z-40 flex h-14 items-center justify-around rounded-2xl border border-white/30 bg-surface/90 px-1.5 shadow-[0_14px_40px_-18px_rgba(15,23,42,.45)] backdrop-blur-2xl transition-all duration-200 lg:hidden; }
+.mobile-tabbar-hidden { @apply pointer-events-none translate-y-28 opacity-0; }
 .mobile-tab { @apply flex w-14 flex-col items-center gap-0.5 text-muted-foreground transition; }
-.mobile-tab span { @apply flex h-7 w-7 items-center justify-center; }
+.mobile-tab span { @apply flex h-6 w-6 items-center justify-center; }
 .mobile-tab small { @apply text-[10px] font-semibold; }
 .mobile-tab.active { @apply text-brand-500; }
-.mobile-add { @apply -mt-7 flex h-14 w-14 items-center justify-center rounded-full border-4 border-background bg-gradient-to-br from-blue-500 to-indigo-500 text-white shadow-[0_12px_28px_-8px_rgba(59,130,246,.8)]; }
+.mobile-add { @apply -mt-6 flex h-12 w-12 items-center justify-center rounded-full border-4 border-background bg-gradient-to-br from-blue-500 to-indigo-500 text-white shadow-[0_12px_28px_-8px_rgba(59,130,246,.8)]; }
 .page-enter-active, .page-leave-active { transition: opacity .18s ease, transform .18s ease; }
 .page-enter-from { opacity: 0; transform: translateY(5px); }
 .page-leave-to { opacity: 0; transform: translateY(-3px); }
@@ -367,5 +620,9 @@ onBeforeUnmount(() => {
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }
+  /* 手机端禁用了 backdrop-blur，半透明底会让滚动内容透出来；
+     改为不透明背景，接近原生导航栏的观感。 */
+  .topbar { background: rgb(var(--color-background)); }
+  .mobile-tabbar { background: rgb(var(--color-surface)); }
 }
 </style>

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"time"
 	"unicode/utf8"
 
 	"smallgo/server/auth"
@@ -170,6 +171,11 @@ func Login(db *gorm.DB, username string, password string, passwordMd5 string, jw
 	if err != nil {
 		return nil, err
 	}
+	// 输账号密码登录同样是显式登录：解除网关隐式登录的抑制，让网关域上的
+	// 后续刷新继续靠网关注入身份维持会话。
+	if err := ClearFnOSSessionSuppression(db, user.ID); err != nil {
+		return nil, err
+	}
 
 	return map[string]interface{}{
 		"token": token,
@@ -179,6 +185,50 @@ func Login(db *gorm.DB, username string, password string, passwordMd5 string, jw
 			"role":     user.Role,
 		},
 	}, nil
+}
+
+// LogoutApplicationSession 记录「用户在应用里主动退出登录」。
+//
+// 直连端口上的会话本来就是应用自己的 JWT，清掉即登出，这里没有额外语义；
+// 网关域上则必须落一条持久化标记，否则服务端下一次请求又能从 X-Trim-Userid
+// 把登录态认回来——那种「退不掉」才是用户报的 bug。标记只抑制**隐式**登录，
+// 用户随后显式点「使用飞牛 NAS 登录」或输账号密码仍然可以正常进来。
+func LogoutApplicationSession(db *gorm.DB, userID uint) error {
+	if userID == 0 {
+		return nil
+	}
+	now := time.Now()
+	return db.Save(&database.UserSession{
+		UserID:       userID,
+		Suppressed:   true,
+		SuppressedAt: now,
+		UpdatedAt:    now,
+	}).Error
+}
+
+// FnOSSessionSuppressed 报告该应用账号是否处于「已主动登出」状态。网关隐式
+// 认人前必须查它，这是「飞牛授权登录也能退出应用」的关键。查询出错时按未抑制
+// 处理：故障不该把所有人锁在登录页外。
+func FnOSSessionSuppressed(db *gorm.DB, userID uint) bool {
+	if userID == 0 {
+		return false
+	}
+	var session database.UserSession
+	if err := db.Where("user_id = ?", userID).First(&session).Error; err != nil {
+		return false
+	}
+	return session.Suppressed
+}
+
+// ClearFnOSSessionSuppression 在用户显式登录成功后解除抑制：从这一刻起，只要
+// 飞牛那侧还登录着，网关身份就可以继续隐式维持应用登录态（刷新不掉线）。
+func ClearFnOSSessionSuppression(db *gorm.DB, userID uint) error {
+	if userID == 0 {
+		return nil
+	}
+	return db.Model(&database.UserSession{}).
+		Where("user_id = ?", userID).
+		Updates(map[string]interface{}{"suppressed": false, "updated_at": time.Now()}).Error
 }
 
 // LoginWithFnOS signs in the application account bound to the gateway's
@@ -204,6 +254,10 @@ func LoginWithFnOS(db *gorm.DB, identity FnOSIdentity, jwtSecret string) (map[st
 		if err := db.Model(&user).Update("fn_os_username", identity.Username).Error; err != nil {
 			return nil, err
 		}
+	}
+	// 显式登录成功 = 用户重新要回应用登录态，解除之前的主动登出抑制。
+	if err := ClearFnOSSessionSuppression(db, user.ID); err != nil {
+		return nil, err
 	}
 	return loginResult(user, jwtSecret)
 }

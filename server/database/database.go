@@ -17,6 +17,7 @@ var coreModels = []interface{}{
 	&SystemConfig{},
 	&UpgradeRecord{},
 	&SecurityQuestion{},
+	&UserSession{},
 	&AuditLog{},
 }
 

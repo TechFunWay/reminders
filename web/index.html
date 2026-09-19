@@ -2,13 +2,24 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/png" sizes="512x512" href="/favicon-512.png" />
+    <!-- 图标只声明浏览器实际会取的小尺寸；512 的大图仅留给 PWA 清单，
+         否则首屏会白白多下载几百 KB（弱网下就是好几秒）。 -->
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
     <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Reminder</title>
+    <title>提醒事项</title>
+    <script>
+      // 本次页面是不是由飞牛统一网关的 socket 服务出来的：服务端返回入口 HTML 时
+      // 替换 __FNOS_GATEWAY__（见 server/server/server.go）。占位符写在字符串里，
+      // 所以开发服务器 / 普通构建没替换时就是 false，不会报错。
+      // 前端必须知道这个答案：网关域上**不能带应用自己的 Authorization**——飞牛
+      // 接入层会把它当成自己的会话 token，认不出就直接回 200 "invalid token"，
+      // 请求根本到不了应用（「登录后刷新就掉登录态」就是这么来的）。网关域的登录态
+      // 由服务端用网关注入的 X-Trim-* 身份解析（见 server/middleware/middleware.go）。
+      window.__FNOS_GATEWAY__ = "__FNOS_GATEWAY_FLAG__" === "true";
+    </script>
     <script>
       // Apply the saved theme BEFORE any CSS or Vue mounts so the first paint
       // already reflects the user's choice — otherwise a system-default
@@ -25,8 +36,79 @@
         } catch (e) { /* private mode or storage off — fall back to defaults */ }
       })();
     </script>
+    <style>
+      /* 首屏骨架：解析完 HTML 立刻可见，替掉此前「入口包下载 + 启动请求往返 +
+         路由守卫」期间的一片白。资源与接口都就绪后由 main.ts 移除。样式内联，
+         不依赖任何外部请求，主题跟随启动脚本写入的 .dark 类。 */
+      #boot-splash {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 18px;
+        background-color: #f7f8fa;
+        background-image:
+          radial-gradient(at 0% 0%, rgba(49, 130, 246, 0.08) 0px, transparent 50%),
+          radial-gradient(at 100% 0%, rgba(168, 85, 247, 0.06) 0px, transparent 50%);
+        color: #181c24;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+        transition: opacity 0.24s ease;
+      }
+      html.dark #boot-splash {
+        background-color: #0b0f1a;
+        background-image:
+          radial-gradient(at 0% 0%, rgba(49, 130, 246, 0.18) 0px, transparent 50%),
+          radial-gradient(at 100% 0%, rgba(192, 132, 252, 0.12) 0px, transparent 50%);
+        color: #f3f4f6;
+      }
+      #boot-splash.boot-done {
+        opacity: 0;
+        pointer-events: none;
+      }
+      #boot-splash .boot-logo {
+        width: 56px;
+        height: 56px;
+        display: grid;
+        place-items: center;
+        border-radius: 16px;
+        background: linear-gradient(135deg, #3182f6, #a855f7);
+        box-shadow: 0 14px 32px rgba(49, 130, 246, 0.32);
+        color: #fff;
+        font-size: 24px;
+        font-weight: 700;
+        animation: boot-pulse 1.6s ease-in-out infinite;
+      }
+      #boot-splash .boot-title {
+        margin: 0;
+        font-size: 16px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+      }
+      #boot-splash .boot-hint {
+        margin: 0;
+        min-height: 20px;
+        font-size: 13px;
+        opacity: 0.55;
+      }
+      @keyframes boot-pulse {
+        0%, 100% { transform: scale(1); }
+        50% { transform: scale(1.045); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #boot-splash .boot-logo { animation: none; }
+      }
+    </style>
   </head>
   <body>
+    <div id="boot-splash">
+      <div class="boot-logo" aria-hidden="true">提</div>
+      <p class="boot-title">提醒事项</p>
+      <p class="boot-hint" id="boot-hint">正在加载…</p>
+    </div>
     <div id="app"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

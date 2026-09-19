@@ -41,6 +41,7 @@ start_process() {
         -data-dir "${DATA_DIR}" \
         -web-dir "${WEB_DIR}" \
         -port "${PORT}" \
+        -device-type fnos \
         -fnos-app \
         -gateway-prefix "/app/techfunway-reminders" \
         -gateway-socket "${APP_DIR}/app.sock" \
