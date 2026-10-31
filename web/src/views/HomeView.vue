@@ -99,6 +99,15 @@
       <div v-for="n in 4" :key="n" class="h-20 animate-pulse rounded-2xl bg-surface/80"></div>
     </section>
 
+    <!-- 时间线显示模板：按日期把过去与未来的提醒排在同一条轴上 -->
+    <ReminderTimeline
+      v-else-if="view === 'timeline' && items.length"
+      :items="items"
+      :now="clockNow"
+      @edit="editItem"
+      @toggle="toggleComplete"
+    />
+
     <section v-else-if="items.length" class="space-y-2">
       <article
         v-for="item in items"
@@ -234,6 +243,7 @@ import Toast from '../components/Toast.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import LunarDatePicker from '../components/LunarDatePicker.vue'
 import RepeatNotifySelect from '../components/RepeatNotifySelect.vue'
+import ReminderTimeline from '../components/ReminderTimeline.vue'
 import {
   completeReminder, createReminder, deleteReminder, getChannelStatuses, getLists, getReminders,
   restoreReminder, snoozeReminder, updateReminder,
@@ -268,18 +278,19 @@ const view = computed(() => String(route.meta.reminderView || 'today'))
 const selectedListID = computed(() => route.name === 'ReminderList' ? Number(route.params.id) : undefined)
 const selectedList = computed(() => lists.value.find(x => x.id === selectedListID.value))
 const pageTitle = computed(() => selectedList.value?.name || String(route.meta.title || '今天'))
-const eyebrow = computed(() => selectedList.value ? '我的清单' : view.value === 'today' ? '此刻最重要' : '提醒事项')
-const accentColor = computed(() => selectedList.value ? listColor(selectedList.value.color) : view.value === 'completed' ? '#10b981' : '#3182f6')
+const eyebrow = computed(() => selectedList.value ? '我的清单' : view.value === 'today' ? '此刻最重要' : view.value === 'timeline' ? '时间轴' : '提醒事项')
+const accentColor = computed(() => selectedList.value ? listColor(selectedList.value.color) : view.value === 'completed' ? '#10b981' : view.value === 'timeline' ? '#0ea5e9' : '#3182f6')
 const subtitle = computed(() => {
   if (selectedList.value) return `${selectedList.value.open_count || 0} 件事情正在等你`
   if (view.value === 'today') return new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' }).format(new Date())
   if (view.value === 'planned') return '按时间整理好接下来的安排'
+  if (view.value === 'timeline') return '过去与未来的安排，排在同一条时间线上'
   if (view.value === 'completed') return '每一个勾选，都是向前一步'
   return '所有未完成的提醒都在这里'
 })
 const overdueCount = computed(() => items.value.filter(isOverdue).length)
-const emptyTitle = computed(() => view.value === 'completed' ? '还没有完成记录' : view.value === 'today' ? '今天轻松了' : '这里还没有提醒')
-const emptyText = computed(() => view.value === 'completed' ? '完成的提醒会安静地收在这里。' : '把脑海里惦记的事情记下来，剩下的交给 Reminder。')
+const emptyTitle = computed(() => view.value === 'completed' ? '还没有完成记录' : view.value === 'timeline' ? '时间线还是空的' : view.value === 'today' ? '今天轻松了' : '这里还没有提醒')
+const emptyText = computed(() => view.value === 'completed' ? '完成的提醒会安静地收在这里。' : view.value === 'timeline' ? '给提醒设上日期，它就会按时间排上这条时间线。' : '把脑海里惦记的事情记下来，剩下的交给 Reminder。')
 
 const quickDateOpen = ref(false)
 const editingDateOpen = ref(false)
@@ -358,9 +369,9 @@ async function submitQuick() {
   if (!quick.title?.trim() || saving.value) return
   saving.value = true
   try {
-    // 没设日期的提醒不会出现在按到期时间过滤的「今天 / 计划」视图里：留在原地
-    // 重新拉取会让用户以为没保存成功（接口 200、列表却毫无变化），所以切到
-    // 「全部」并说明原因；已经在「全部 / 清单」里时行为不变。
+    // 没设日期的提醒不会出现在按到期时间过滤的「今天 / 计划 / 时间线」视图里：
+    // 留在原地重新拉取会让用户以为没保存成功（接口 200、列表却毫无变化），所以
+    // 切到「全部」并说明原因；已经在「全部 / 清单」里时行为不变。
     const undated = !quick.due_at
     await createReminder({ ...quick, title: quick.title.trim() })
     quickChannelsTouched = false
@@ -368,7 +379,7 @@ async function submitQuick() {
     preset.value = ''
     quickExpanded.value = false
     quickFocused.value = false
-    if (undated && !selectedListID.value && (view.value === 'today' || view.value === 'planned')) {
+    if (undated && !selectedListID.value && (view.value === 'today' || view.value === 'planned' || view.value === 'timeline')) {
       await router.push({ name: 'AllReminders' })
       showToast('已保存到「全部」：这条提醒没有设置日期')
     } else {

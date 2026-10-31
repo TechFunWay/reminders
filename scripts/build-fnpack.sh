@@ -67,6 +67,8 @@ mkdir -p ${BUILD_DIR}
 cp fnpack/manifest fnpack/manifest.bak
 
 for ARCH in "amd64" "arm64"; do
+  FILE_ARCH="$ARCH"
+  if [ "$ARCH" = "amd64" ]; then FILE_ARCH="x86"; fi
   echo "Building fnOS package for ${ARCH}..."
 
   echo "  Compiling Go binary via Docker (CGO_ENABLED=1, linux/${ARCH})..."
@@ -125,15 +127,15 @@ for ARCH in "amd64" "arm64"; do
 
   # Move the built fpk to release directory（文件名带版本号）
   if [ -f "${BUILD_PACK}/${FNOS_PKG_NAME}.fpk" ]; then
-    mv "${BUILD_PACK}/${FNOS_PKG_NAME}.fpk" "${BUILD_DIR}/${FNOS_PKG_NAME}_${VERSION}_${ARCH}.fpk"
+    mv "${BUILD_PACK}/${FNOS_PKG_NAME}.fpk" "${BUILD_DIR}/${FNOS_PKG_NAME}_${VERSION}_${FILE_ARCH}.fpk"
   elif [ -f "${BUILD_PACK}/../${FNOS_PKG_NAME}.fpk" ]; then
-    mv "${BUILD_PACK}/../${FNOS_PKG_NAME}.fpk" "${BUILD_DIR}/${FNOS_PKG_NAME}_${VERSION}_${ARCH}.fpk"
+    mv "${BUILD_PACK}/../${FNOS_PKG_NAME}.fpk" "${BUILD_DIR}/${FNOS_PKG_NAME}_${VERSION}_${FILE_ARCH}.fpk"
   fi
 
   # Clean up
   rm -rf "${BUILD_PACK}"
 
-  echo "Built ${FNOS_PKG_NAME}_${VERSION}_${ARCH}.fpk"
+  echo "Built ${FNOS_PKG_NAME}_${VERSION}_${FILE_ARCH}.fpk"
 done
 
 # Restore original manifest

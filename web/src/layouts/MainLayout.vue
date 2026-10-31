@@ -230,6 +230,7 @@ const appBuildTime = ref('')
 const icons = {
   today: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="4" y="5" width="16" height="15" rx="3" stroke-width="1.8"/><path d="M8 3v4m8-4v4M4 10h16" stroke-width="1.8" stroke-linecap="round"/><path d="M9 15h6" stroke-width="2" stroke-linecap="round"/></svg>',
   planned: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="9" stroke-width="1.8"/><path d="M12 7v5l3.2 2" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  timeline: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 4v16" stroke-width="1.8" stroke-linecap="round"/><circle cx="6" cy="8" r="2.2" stroke-width="1.8"/><circle cx="6" cy="16" r="2.2" stroke-width="1.8"/><path d="M11 8h8M11 16h8" stroke-width="1.8" stroke-linecap="round"/></svg>',
   all: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01" stroke-width="2" stroke-linecap="round"/></svg>',
   completed: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="9" stroke-width="1.8"/><path d="m8 12 2.7 2.7L16.5 9" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
 }
@@ -237,6 +238,7 @@ const icons = {
 const smartNav = [
   { to: '/admin', label: '今天', key: 'today', tone: 'bg-blue-500/12 text-blue-500', icon: icons.today },
   { to: '/admin/planned', label: '计划', key: 'planned', tone: 'bg-amber-500/12 text-amber-500', icon: icons.planned },
+  { to: '/admin/timeline', label: '时间线', key: 'timeline', tone: 'bg-sky-500/12 text-sky-500', icon: icons.timeline },
   { to: '/admin/all', label: '全部', key: 'all', tone: 'bg-violet-500/12 text-violet-500', icon: icons.all },
   { to: '/admin/completed', label: '已完成', key: 'completed', tone: 'bg-emerald-500/12 text-emerald-500', icon: icons.completed },
 ]

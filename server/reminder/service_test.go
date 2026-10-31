@@ -257,6 +257,48 @@ func TestListRemindersLoadsRelatedDataInConstantQueries(t *testing.T) {
 	}
 }
 
+func TestListRemindersTimelineSpansPastAndFuture(t *testing.T) {
+	cleanup := testDB(t)
+	defer cleanup()
+
+	const userID = 66
+	past := time.Now().Add(-24 * time.Hour).Truncate(time.Second)
+	future := time.Now().Add(72 * time.Hour).Truncate(time.Second)
+	completed, err := createReminder(appDB, userID, SaveReminderInput{
+		Title: "过去的已完成", DueAt: &past, RepeatRule: "none", Channels: []string{ChannelInApp},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := completeReminder(appDB, userID, completed.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := createReminder(appDB, userID, SaveReminderInput{
+		Title: "未来的安排", DueAt: &future, RepeatRule: "none", Channels: []string{ChannelInApp},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := createReminder(appDB, userID, SaveReminderInput{
+		Title: "没有日期", RepeatRule: "none", Channels: []string{ChannelInApp},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := listReminders(appDB, userID, "timeline", "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected 2 dated reminders, got %d", len(items))
+	}
+	if items[0].Title != "过去的已完成" || items[1].Title != "未来的安排" {
+		t.Fatalf("expected past-before-future order, got %q then %q", items[0].Title, items[1].Title)
+	}
+	if items[0].CompletedAt == nil {
+		t.Fatal("timeline must include completed reminders")
+	}
+}
+
 func TestRepeatNotifyRequeuesUntilCompleted(t *testing.T) {
 	cleanup := testDB(t)
 	defer cleanup()

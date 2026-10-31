@@ -19,4 +19,7 @@ export const SK = {
   // 本标签页的客户端标识（sessionStorage，一个标签页一个）：随请求与 SSE 连接
   // 一起发给服务端，服务端广播数据变更时据此跳过发起者自己。同样必须带前缀。
   clientId: `${P}client_id`,
+  // 时间线视图的排序方向（'1' 倒序 / '0' 正序，默认倒序）：纯前端偏好，带前缀
+  // 是网关域共享 localStorage 的同一套原因。
+  timelineDesc: `${P}timeline_desc`,
 } as const

@@ -385,6 +385,10 @@ func listReminders(db *gorm.DB, userID uint, view, query string, listID uint) ([
 		q = q.Where("completed_at IS NULL AND due_at IS NOT NULL AND due_at < ?", endToday)
 	case "planned":
 		q = q.Where("completed_at IS NULL AND due_at IS NOT NULL")
+	case "timeline":
+		// 时间线视图按到期日把过去（含已完成）与未来的安排排在同一条轴上，
+		// 只要求有 due_at，不区分完成状态。
+		q = q.Where("due_at IS NOT NULL")
 	case "completed":
 		q = q.Where("completed_at IS NOT NULL")
 	default:
